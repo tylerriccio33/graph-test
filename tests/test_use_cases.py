@@ -56,6 +56,12 @@ UC 36  An unmapped changed file makes `run` run everything (never silently skip)
        `rank` only warns.
 UC 37  Ignored files (README.md, docs/) select nothing and aren't unmapped.
 UC 38  The pytest plugin runs only the parametrized cases whose data file changed.
+
+Regressions (GitHub issue #1)
+UC 39  A diff containing non-UTF-8 bytes (latin-1 corpus) doesn't crash.
+UC 40  A root conftest importing heavy code for a hook doesn't link every test to that code.
+UC 41  ...but editing that conftest's hook or top-level code still reruns everything under it.
+UC 42  `conftest-imports = "all"` restores the conservative behavior.
 """
 
 from __future__ import annotations
@@ -551,3 +557,55 @@ def test_uc38_plugin_runs_only_changed_cases(data_repo: Path, capfd) -> None:
     assert "test_corpus[a] PASSED" in out
     assert "test_corpus[b]" not in out
     assert "1 deselected" in out
+
+
+# ---------------------------------------------------------------- regressions (issue #1)
+
+
+def test_uc39_non_utf8_diff(data_repo: Path) -> None:
+    (data_repo / "tests/corpus/a.sas").write_bytes("caf\xe9 \xba\n".encode("latin-1"))
+    got = selected_from_git(data_repo)
+    assert got["tests/test_corpus.py::test_corpus"].cases == ["tests/corpus/a.sas"]
+
+
+HEAVY_CONFTEST = {
+    "tests/conftest.py": (
+        "import heavy.suites\n\n\ndef pytest_sessionstart(session):\n    heavy.suites.load()\n"
+    ),
+    "heavy/__init__.py": "",
+    "heavy/suites.py": "from pkg.c import h\n\nREGISTRY = h()\n\n\ndef load():\n    return h()\n",
+}
+
+
+@pytest.fixture
+def heavy_repo(tmp_path: Path) -> Path:
+    return init_repo(tmp_path, {**PY, **HEAVY_CONFTEST})
+
+
+def test_uc40_conftest_imports_do_not_fan_out(heavy_repo: Path) -> None:
+    edit(heavy_repo, "pkg/c.py", "return 1", "return 2")
+    got = selected_from_git(heavy_repo)
+    assert "tests/test_c.py::test_h" in got
+    assert "tests/test_other.py::test_o" not in got
+    assert "tests/deep/test_deep.py::test_deep" not in got
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("    heavy.suites.load()\n", "    heavy.suites.load()\n    print('hook')\n"),  # hook body
+        ("import heavy.suites\n", "import heavy.suites\nimport os\n"),  # top-level code
+    ],
+)
+def test_uc41_conftest_own_edits_still_select_all(heavy_repo: Path, old: str, new: str) -> None:
+    edit(heavy_repo, "tests/conftest.py", old, new)
+    got = selected_from_git(heavy_repo)
+    assert {"tests/test_other.py::test_o", "tests/deep/test_deep.py::test_deep"} <= set(got)
+
+
+def test_uc42_conftest_imports_all_mode(heavy_repo: Path) -> None:
+    write_files(heavy_repo, {"pyproject.toml": '[tool.graph-test]\nconftest-imports = "all"\n'})
+    git(heavy_repo, "add", "-A")
+    git(heavy_repo, "commit", "-qm", "config")
+    edit(heavy_repo, "pkg/c.py", "return 1", "return 2")
+    assert "tests/test_other.py::test_o" in selected_from_git(heavy_repo)

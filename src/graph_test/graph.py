@@ -8,6 +8,7 @@ Node kinds:
 - ``crate:<name>``: a Rust crate.
 - ``data:<dir>``: a data directory referenced by Python code; data files are plain path nodes.
 - ``path/to/file.rs#self``: just that Rust file's own text, excluding its ``mod`` children.
+- ``path/to/conftest.py#self``: a conftest's own top-level code and hooks, not its imports.
 - ``missing:<module>``: an internal import that doesn't resolve (e.g. a deleted module).
 
 An edge ``a -> b`` means "a depends on b", so a change to ``b`` may affect ``a``.
@@ -389,6 +390,7 @@ class _PythonBuilder:
                 self.pyo3[m] = crate.node
         self.internal_tops: set[str] = set()
         self.conftests: dict[Path, str] = {}
+        self.conftest_all = cfg.conftest_imports == "all"
         self.code_dirs: set[Path] = {Path(".")}
 
     # ------------------------------------------------------------------ setup
@@ -406,6 +408,7 @@ class _PythonBuilder:
                 self.code_dirs.add(f.parent)
             if f.name == "conftest.py":
                 self.conftests[f.parent] = str(f)
+                self.g.add_node(f"{f}#self")
         for crate in self.g.crates.values():
             self.code_dirs.add(crate.dir)
             self.code_dirs.add(crate.dir / "src")
@@ -610,8 +613,12 @@ class _PythonBuilder:
                         g.add_edge(node, fx)
             if sym.get("parent"):
                 g.add_edge(node, f"{file}::{sym['parent']}")
-            if sym.get("autouse") or (f.name == "conftest.py" and qual.startswith("pytest_")):
-                # Autouse fixtures and hooks apply to every test that sees this module.
+            if sym.get("autouse"):
+                # Autouse fixtures run for every test that sees this module.
+                g.add_edge(file, node)
+                if f.name == "conftest.py":
+                    g.add_edge(f"{file}#self", node)
+            elif f.name == "conftest.py" and qual.startswith("pytest_") and self.conftest_all:
                 g.add_edge(file, node)
             if stub_crate:
                 # Stub symbol -> the Rust files defining it (#[pyfunction]/#[pyclass]/#[pymethods]).
@@ -639,10 +646,15 @@ class _PythonBuilder:
         for qual, node in tests:
             nodeid = f"{file}::{qual.replace('.', '::')}" if qual else file
             g.tests[node] = TestTarget(node, "pytest", file, nodeid=nodeid)
+        # Link to each enclosing conftest. By default only to its own text ("#self": top-level
+        # code, hooks, autouse fixtures); requested fixtures are linked per test above. Going
+        # through the conftest's module node would pull in everything it imports, so one
+        # heavy import in a root conftest would select every test.
         d = f.parent
         while True:
             if d in self.conftests:
-                g.add_edge(file, self.conftests[d])
+                conf = self.conftests[d]
+                g.add_edge(file, conf if self.conftest_all else f"{conf}#self")
             if d == Path("."):
                 break
             d = d.parent

@@ -71,6 +71,12 @@ def starts_for(
                 lines = None
             for qual in pyscan.symbols_at(info, hunks, lines):
                 code.append(path if qual is None else f"{path}::{qual}")
+        # A conftest's top-level code or hooks changing affects every test under it.
+        shallow = f"{path}#self"
+        if shallow in nodes and any(
+            c == path or c.rpartition("::")[2].startswith("pytest_") for c in code
+        ):
+            code.append(shallow)
     elif path in nodes and path not in g.data_nodes:
         code.append(path)
         if f"{path}#self" in nodes:
