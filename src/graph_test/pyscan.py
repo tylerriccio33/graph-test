@@ -114,7 +114,33 @@ def _symbol(node: ast.stmt, kind: str, exclude: set[int] | None = None) -> dict[
             sym["fixture"] = True
         if autouse:
             sym["autouse"] = True
+        registers = _registrations(node)
+        if registers:
+            sym["registers"] = registers
     return sym
+
+
+def _registrations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Dispatchers this function registers with: ``@f.register`` / ``@f.register(T)`` -> ``f``.
+
+    Covers functools.singledispatch / singledispatchmethod and similar registries, whose
+    implementations are reached at runtime through the dispatcher, never by name.
+    """
+    out = []
+    for d in node.decorator_list:
+        chain = dotted(d.func if isinstance(d, ast.Call) else d)
+        if chain.endswith(".register"):
+            out.append(chain.removesuffix(".register"))
+    return out
+
+
+def _add_def(symbols: dict[str, dict[str, Any]], name: str, sym: dict[str, Any]) -> None:
+    """Add a def/class; a redefinition takes the plain name (it's what references see) and
+    the earlier one is kept as ``name@line``, so e.g. many ``def _`` all stay mappable."""
+    old = symbols.pop(name, None)
+    if old is not None:
+        symbols[f"{name}@{old['spans'][0][0]}"] = old
+    symbols[name] = sym
 
 
 def _merge(into: dict[str, Any], other: dict[str, Any]) -> None:
@@ -168,7 +194,7 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
             inert.append(_span(stmt))
         elif isinstance(stmt, _FUNC):
-            symbols[stmt.name] = _symbol(stmt, "func")
+            _add_def(symbols, stmt.name, _symbol(stmt, "func"))
         elif isinstance(stmt, ast.ClassDef):
             is_test_cls = stmt.name.startswith("Test") or any(
                 dotted(b).endswith("TestCase") for b in stmt.bases
@@ -181,7 +207,7 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
             cls = _symbol(stmt, "class", {id(m) for m in methods})
             if is_test_cls:
                 cls["test_class"] = True
-            symbols[stmt.name] = cls
+            _add_def(symbols, stmt.name, cls)
             for m in methods:
                 sym = _symbol(m, "method")
                 sym["parent"] = stmt.name
