@@ -27,7 +27,7 @@ from typing import Any
 from graph_test import pyscan, rsscan
 from graph_test.config import Config
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 @dataclass
@@ -613,6 +613,11 @@ class _PythonBuilder:
                         g.add_edge(node, fx)
             if sym.get("parent"):
                 g.add_edge(node, f"{file}::{sym['parent']}")
+            for dispatcher in sym.get("registers", ()):
+                # The dispatcher calls every registered implementation at runtime.
+                target = self._resolve_ref(file, info, dispatcher)
+                if target and target != node:
+                    g.add_edge(target, node)
             if sym.get("autouse"):
                 # Autouse fixtures run for every test that sees this module.
                 g.add_edge(file, node)

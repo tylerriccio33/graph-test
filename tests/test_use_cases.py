@@ -62,6 +62,12 @@ UC 39  A diff containing non-UTF-8 bytes (latin-1 corpus) doesn't crash.
 UC 40  A root conftest importing heavy code for a hook doesn't link every test to that code.
 UC 41  ...but editing that conftest's hook or top-level code still reruns everything under it.
 UC 42  `conftest-imports = "all"` restores the conservative behavior.
+
+Regressions (GitHub issue #3)
+UC 43  singledispatch: editing code reached only by a `@f.register` implementation reruns
+       tests calling the dispatcher `f`.
+UC 44  Registrations in another module (`@other.f.register(T)`) are linked too.
+UC 45  Many `def _` in one module each map to their own lines (no name collision).
 """
 
 from __future__ import annotations
@@ -609,3 +615,53 @@ def test_uc42_conftest_imports_all_mode(heavy_repo: Path) -> None:
     git(heavy_repo, "commit", "-qm", "config")
     edit(heavy_repo, "pkg/c.py", "return 1", "return 2")
     assert "tests/test_other.py::test_o" in selected_from_git(heavy_repo)
+
+
+# ---------------------------------------------------------------- regressions (issue #3)
+
+DISPATCH = {
+    "pkg/dispatch.py": (
+        "from functools import singledispatch\n"
+        "from pkg.c import h\n\n\n"
+        "@singledispatch\ndef render(x):\n    raise NotImplementedError\n\n\n"
+        "@render.register\ndef _(x: int):\n    return h()\n\n\n"
+        "@render.register(str)\ndef _(x):\n    return x.upper()\n"
+    ),
+    "pkg/ext.py": (
+        "from pkg import dispatch\n\n\n"
+        "@dispatch.render.register(float)\ndef _(x):\n    return round(x)\n"
+    ),
+    "tests/test_render.py": (
+        "from pkg.dispatch import render\n\n\ndef test_render():\n    assert render(1)\n"
+    ),
+}
+
+
+@pytest.fixture
+def dispatch_repo(tmp_path: Path) -> Path:
+    return init_repo(tmp_path, {**PY, **DISPATCH})
+
+
+def test_uc43_singledispatch_registration_reached(dispatch_repo: Path) -> None:
+    edit(dispatch_repo, "pkg/c.py", "return 1", "return 2")  # only the int impl calls h()
+    got = selected_from_git(dispatch_repo)
+    assert got["tests/test_render.py::test_render"].path == [
+        "tests/test_render.py::test_render",
+        "pkg/dispatch.py::render",
+        "pkg/dispatch.py::_@10",
+        "pkg/c.py::h",
+    ]
+
+
+def test_uc44_cross_module_registration(dispatch_repo: Path) -> None:
+    edit(dispatch_repo, "pkg/ext.py", "round(x)", "int(x)")
+    assert "tests/test_render.py::test_render" in selected_from_git(dispatch_repo)
+
+
+def test_uc45_duplicate_names_map_to_own_lines(dispatch_repo: Path) -> None:
+    from graph_test import pyscan
+
+    info = build(Config.load(dispatch_repo)).py_info["pkg/dispatch.py"]
+    assert {"render", "_@10", "_"} <= set(info["symbols"])
+    assert pyscan.symbols_at(info, [(12, 12, False)]) == {"_@10"}  # int impl body
+    assert pyscan.symbols_at(info, [(17, 17, False)]) == {"_"}  # str impl body

@@ -18,6 +18,7 @@ The diff is taken against the merge-base with `origin/main` (or `--base`), plus 
 
 - imports, including relative imports and re-exports through `__init__.py` hubs, so a hub doesn't fan out to everything
 - `module.attr` chains
+- `functools.singledispatch`-style registrations: a function decorated with `@f.register` or `@f.register(T)` is treated as a dependency of `f`, in the same module or another one. Repeated names such as many `def _` stay separate symbols, so an edit maps to the right one
 - pytest fixtures defined in the test file or a `conftest.py`, including autouse fixtures and `pytest_*` hooks. A conftest's own imports don't link to every test, so a heavy import used by a session hook won't select the whole suite (see `conftest-imports`)
 - module-level code (import-time side effects)
 - deleted modules, so their importers are selected
