@@ -35,6 +35,13 @@ DEFAULT_GLOBAL_FILES = (
 )
 
 
+# Env var pointing the pytest plugin at a selection file.
+SELECTION_ENV = "GRAPH_TEST_SELECTION"
+
+# Changes to these never select tests and never count as "unmapped".
+DEFAULT_IGNORE = ("*.md", "*.rst", "docs/*", "LICENSE*", ".gitignore", ".github/*")
+
+
 @dataclass
 class Config:
     root: Path
@@ -50,6 +57,10 @@ class Config:
     # A test must co-change with a file at least this many times to count.
     min_cochange_support: int = 2
     extra_test_globs: tuple[str, ...] = field(default_factory=tuple)
+    ignore: tuple[str, ...] = DEFAULT_IGNORE
+    # Explicit data dependencies: changed-file glob -> test node globs
+    # (e.g. "tests/corpus/*" -> ["tests/test_corpus.py::test_corpus"]).
+    data: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, root: Path) -> Config:
@@ -79,4 +90,8 @@ class Config:
                 setattr(cfg, key, type(getattr(cfg, key))(section[toml_key]))
         if "test-globs" in section:
             cfg.extra_test_globs = tuple(section["test-globs"])
+        if "ignore" in section:
+            cfg.ignore = tuple(section["ignore"])
+        if "data" in section:
+            cfg.data = {str(k): [str(x) for x in v] for k, v in section["data"].items()}
         return cfg

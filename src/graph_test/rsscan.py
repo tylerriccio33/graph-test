@@ -16,6 +16,17 @@ _MOD_RE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]
 _USE_RE = re.compile(r"\buse\s+([^;]+);")
 _TEST_RE = re.compile(r"#\[(?:cfg\(test\)|test|tokio::test|rstest)")
 _PATH_SEG_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ATTRS = r"(?:#\[[^\]]*\]\s*)*"
+_VIS = r"(?:pub(?:\([^)]*\))?\s+)?"
+_PYFN_RE = re.compile(
+    r"#\[pyfunction[^\]]*\]\s*"
+    + _ATTRS
+    + _VIS
+    + r"(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)"
+)
+_PYCLASS_RE = re.compile(r"#\[pyclass[^\]]*\]\s*" + _ATTRS + _VIS + r"(?:struct|enum)\s+(\w+)")
+_PYMETHODS_RE = re.compile(r"#\[pymethods\]\s*" + _ATTRS + r"impl(?:<[^>]*>)?\s+(\w+)")
+_PYNAME_RE = re.compile(r'(?:pyo3|pyfunction|pyclass)\((?:[^()"]*,\s*)?name\s*=\s*"([^"]+)"')
 
 
 @dataclass
@@ -81,6 +92,16 @@ class RustFile:
     mods: list[str]
     uses: list[list[str]]  # each a path split on ::
     has_tests: bool
+    # PyO3: python-visible functions, [rust_struct, python_name] classes, and
+    # rust structs with a #[pymethods] impl in this file.
+    pyfunctions: list[str] = field(default_factory=list)
+    pyclasses: list[list[str]] = field(default_factory=list)
+    pymethods: list[str] = field(default_factory=list)
+
+
+def _py_name(match: re.Match[str], default: str) -> str:
+    named = _PYNAME_RE.search(match.group(0))
+    return named.group(1) if named else default
 
 
 def scan(source: str) -> RustFile:
@@ -89,7 +110,14 @@ def scan(source: str) -> RustFile:
     uses: list[list[str]] = []
     for m in _USE_RE.finditer(code):
         uses.extend(_expand_use(m.group(1)))
-    return RustFile(mods=mods, uses=uses, has_tests=bool(_TEST_RE.search(code)))
+    return RustFile(
+        mods=mods,
+        uses=uses,
+        has_tests=bool(_TEST_RE.search(code)),
+        pyfunctions=[_py_name(m, m.group(1)) for m in _PYFN_RE.finditer(code)],
+        pyclasses=[[m.group(1), _py_name(m, m.group(1))] for m in _PYCLASS_RE.finditer(code)],
+        pymethods=_PYMETHODS_RE.findall(code),
+    )
 
 
 def _expand_use(text: str) -> list[list[str]]:

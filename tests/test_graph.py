@@ -13,7 +13,7 @@ from graph_test.rank import rank
 
 def ranked_nodes(repo: Path, changed: list[str]) -> list[str]:
     cfg = Config.load(repo)
-    return [r.target.node for r in rank(cfg, build(cfg), changed).ranked]
+    return [r.target.node for r in rank(cfg, build(cfg), dict.fromkeys(changed)).ranked]
 
 
 def test_discovers_tests(repo: Path) -> None:

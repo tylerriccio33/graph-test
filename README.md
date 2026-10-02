@@ -1,39 +1,64 @@
 # graph-test
 
-Ranks the tests most likely to be affected by your diff in mixed Rust + Python repos, so you can run a useful slice of CI locally.
+Selects and ranks the tests affected by your diff in mixed Rust + Python repos. It works as a pass/fail gate (`run`) or as a ranked list for quick local runs (`rank -n N`).
 
 ```sh
-graph-test rank --explain          # ranked tests vs merge-base with origin/main
-graph-test rank -n 20 --format cmd # pytest/cargo commands for the top 20
-graph-test run -n 20 --pytest "uv run pytest"
-graph-test graph --rdeps crates/core/src/math.rs
+graph-test run --pytest "uv run pytest"   # gate: every affected test, exit code = pass/fail
+graph-test run -n 40                      # just the top 40 by score
+graph-test rank --explain                 # ranked list and why each test was picked
+graph-test rank --affected --format cmd   # pytest/cargo commands to paste
+graph-test graph --rdeps pkg/core.py::parse
 ```
 
-## How it scores
+The diff is taken against the merge-base with `origin/main` (or `--base`), plus uncommitted and untracked files.
 
-- **Static graph:** Python `import`s (via `ast`, including relative imports, package `__init__`, and `conftest.py`), Rust `mod`/`use` and workspace crate dependencies, and PyO3 crates linked to the Python modules they expose (`[lib] name` / `tool.maturin.module-name`, including `.pyi` stubs). Each test scores `graph_weight / (1 + distance)` to the changed file.
-- **Co-change:** a test that changed together with a file in git history (at least 2 commits; commits touching more than 50 files are ignored) adds `cochange_weight * P(test | file)`.
-- **Global files** (`Cargo.lock`, `pyproject.toml`, ...) give every test a minimum score.
+## What it tracks
 
-Rust test targets: `tests/*.rs` → `cargo test -p <crate> --test <name>`; files with `#[cfg(test)]` → `cargo test -p <crate> --lib -- <mod::path>::`.
+**Python, per symbol.** Each test function or method is its own node. Diff hunks map to the functions, classes, or assigned names they touch, so editing one function selects only the tests that reach that function. Comment, blank-line, and docstring edits select nothing. The graph also follows:
+
+- imports, including relative imports and re-exports through `__init__.py` hubs, so a hub doesn't fan out to everything
+- `module.attr` chains
+- pytest fixtures defined in the test file or a `conftest.py`, including autouse fixtures and `pytest_*` hooks
+- module-level code (import-time side effects)
+- deleted modules, so their importers are selected
+
+**Rust.** `mod` declarations, `use` paths (`crate::`, `super::`, other workspace crates), and crate dependencies.
+
+- Integration tests run with `cargo test -p <crate> --test <name>`.
+- Unit tests run with `cargo test -p <crate> --lib -- <module>::`.
+
+**PyO3.** Stub symbols in `.pyi` files link to the Rust file defining them: `#[pyfunction]`, `#[pyclass]`, `#[pymethods]`, and `#[pyo3(name = "...")]`. A Rust change therefore reaches only the Python tests calling the affected functions. Editing the `#[pymodule]` file itself affects everything that imports the extension.
+
+**Data files.** Path-like string literals in Python link to the files and directories they name, for example `HERE / "corpus"`, `"expected/*.csv"`, or `"tests/fixtures/input.sas"`. A test reached only through data is narrowed to individual cases: the bundled pytest plugin keeps only the parametrized cases whose parameters or ids refer to a changed file, and keeps every case when none match. Anything the tool can't infer can be mapped explicitly in config.
+
+**Safety in gate mode.** A changed file the graph can't place makes `run` run everything (`--on-unmapped all`, the default). A changed global file does the same. Ignored paths (`*.md`, `docs/*`, ...) never select anything.
+
+**Ranking.** A test scores `graph_weight / (1 + hops)`, plus a git co-change score (at least 2 shared commits; root commits and commits touching more than 50 files are skipped). In gate mode, tests linked only by history are added with `--include-history`.
 
 ## Config (`pyproject.toml`)
 
 ```toml
 [tool.graph-test]
 exclude = ["vendor"]
-global-files = ["Cargo.lock", "pyproject.toml"]
-graph-weight = 0.7
-cochange-weight = 0.3
-global-floor = 0.2
-history-commits = 1000
-max-commit-files = 50
-min-cochange-support = 2
+ignore = ["*.md", "docs/*"]
+global-files = ["Cargo.lock", "pyproject.toml", "uv.lock"]
 test-globs = ["integration/*_check.py"]
+
+[tool.graph-test.data]
+"tests/integration/code/*" = ["tests/test_integration.py::test_code*"]
+"golden/*" = ["tests/test_golden.py::*"]
 ```
 
-Parse results are cached in `.graph-test/` (add it to `.gitignore`).
+Weights and other tuning keys: `graph-weight`, `cochange-weight`, `global-floor`, `history-commits`, `max-commit-files`, `min-cochange-support`.
+
+State lives in `.graph-test/`, which ignores itself in git.
+
+## Limitations
+
+- Dynamic dispatch, such as `getattr` or methods called on instances, resolves at class level or not at all. Unresolvable `module.attr` references fall back to "anything in that module".
+- Data links come from string literals, so paths built entirely at runtime need a `[tool.graph-test.data]` entry.
+- Rust tests are selected per file or per module, not per `#[test]` function.
 
 ## Development
 
-`make install`, `make fmt`, `make check` (ruff + pyrefly + pytest).
+`make install`, `make fmt`, `make check` (ruff + pyrefly + pytest). The numbered use cases are in `tests/test_use_cases.py`.

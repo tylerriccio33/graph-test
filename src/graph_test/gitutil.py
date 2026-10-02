@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+
+_HUNK_RE = re.compile(r"@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
 
 class GitError(RuntimeError):
@@ -32,16 +35,46 @@ def default_base(root: Path) -> str:
     return "HEAD"
 
 
-def changed_files(root: Path, base: str) -> list[str]:
-    """Files changed vs the merge-base with ``base``, including uncommitted and untracked."""
+# (start, end, pure_deletion) in new-file line numbers.
+Hunk = tuple[int, int, bool]
+# path -> hunks, or None when the whole file should count as changed (new/untracked/binary).
+Changes = dict[str, list[Hunk] | None]
+
+
+def changed_hunks(root: Path, base: str) -> Changes:
+    """Changes vs the merge-base with ``base``, including uncommitted and untracked files."""
     try:
         merge_base = _git(root, "merge-base", base, "HEAD").strip()
     except GitError:
         merge_base = base
-    files: set[str] = set()
-    files.update(_git(root, "diff", "--name-only", merge_base).splitlines())
-    files.update(_git(root, "ls-files", "--others", "--exclude-standard").splitlines())
-    return sorted(f for f in files if f)
+    q = ("-c", "core.quotePath=false")
+    out: Changes = {}
+    for f in _git(root, *q, "diff", "--no-renames", "--name-only", merge_base).splitlines():
+        if f:
+            out[f] = None
+    diff = _git(root, *q, "diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0", merge_base)
+    new = ""
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            new = line[4:].removeprefix("b/")
+        elif line.startswith("@@"):
+            if new == "/dev/null":
+                continue  # deleted file: stays None
+            path = new
+            m = _HUNK_RE.match(line)
+            if not m:
+                continue
+            start, count = int(m.group(1)), int(m.group(2) or "1")
+            hunks = out.get(path) or []
+            if count == 0:
+                hunks.append((max(start, 1), start + 1, True))
+            else:
+                hunks.append((start, start + count - 1, False))
+            out[path] = hunks
+    for f in _git(root, *q, "ls-files", "--others", "--exclude-standard").splitlines():
+        if f:
+            out[f] = None
+    return out
 
 
 def commit_file_sets(root: Path, limit: int) -> Iterator[list[str]]:
