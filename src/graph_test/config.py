@@ -58,6 +58,11 @@ class Config:
     min_cochange_support: int = 2
     extra_test_globs: tuple[str, ...] = field(default_factory=tuple)
     ignore: tuple[str, ...] = DEFAULT_IGNORE
+    # How tests depend on enclosing conftest.py files:
+    #   "fixtures-only": its own code, hooks, autouse fixtures, and the fixtures a test requests.
+    #   "all": additionally everything the conftest imports (conservative, but one heavy
+    #          import in a root conftest then selects every test).
+    conftest_imports: str = "fixtures-only"
     # Explicit data dependencies: changed-file glob -> test node globs
     # (e.g. "tests/corpus/*" -> ["tests/test_corpus.py::test_corpus"]).
     data: dict[str, list[str]] = field(default_factory=dict)
@@ -84,6 +89,7 @@ class Config:
             "history_commits",
             "max_commit_files",
             "min_cochange_support",
+            "conftest_imports",
         ):
             toml_key = key.replace("_", "-")
             if toml_key in section:

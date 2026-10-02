@@ -18,7 +18,7 @@ The diff is taken against the merge-base with `origin/main` (or `--base`), plus 
 
 - imports, including relative imports and re-exports through `__init__.py` hubs, so a hub doesn't fan out to everything
 - `module.attr` chains
-- pytest fixtures defined in the test file or a `conftest.py`, including autouse fixtures and `pytest_*` hooks
+- pytest fixtures defined in the test file or a `conftest.py`, including autouse fixtures and `pytest_*` hooks. A conftest's own imports don't link to every test, so a heavy import used by a session hook won't select the whole suite (see `conftest-imports`)
 - module-level code (import-time side effects)
 - deleted modules, so their importers are selected
 
@@ -30,6 +30,8 @@ The diff is taken against the merge-base with `origin/main` (or `--base`), plus 
 **PyO3.** Stub symbols in `.pyi` files link to the Rust file defining them: `#[pyfunction]`, `#[pyclass]`, `#[pymethods]`, and `#[pyo3(name = "...")]`. A Rust change therefore reaches only the Python tests calling the affected functions. Editing the `#[pymodule]` file itself affects everything that imports the extension.
 
 **Data files.** Path-like string literals in Python link to the files and directories they name, for example `HERE / "corpus"`, `"expected/*.csv"`, or `"tests/fixtures/input.sas"`. A test reached only through data is narrowed to individual cases: the bundled pytest plugin keeps only the parametrized cases whose parameters or ids refer to a changed file, and keeps every case when none match. Anything the tool can't infer can be mapped explicitly in config.
+
+Case narrowing needs graph-test installed in the environment where the tests run (for example as a dev dependency), because the plugin loads through pytest's `pytest11` entry point. Without it, the selected test functions still run, just with every case.
 
 **Safety in gate mode.** A changed file the graph can't place makes `run` run everything (`--on-unmapped all`, the default). A changed global file does the same. Ignored paths (`*.md`, `docs/*`, ...) never select anything.
 
@@ -43,6 +45,9 @@ exclude = ["vendor"]
 ignore = ["*.md", "docs/*"]
 global-files = ["Cargo.lock", "pyproject.toml", "uv.lock"]
 test-globs = ["integration/*_check.py"]
+# "fixtures-only" (default): tests depend on a conftest's own code, hooks, autouse fixtures
+# and the fixtures they request. "all": also on everything the conftest imports.
+conftest-imports = "fixtures-only"
 
 [tool.graph-test.data]
 "tests/integration/code/*" = ["tests/test_integration.py::test_code*"]
@@ -58,6 +63,7 @@ State lives in `.graph-test/`, which ignores itself in git.
 - Dynamic dispatch, such as `getattr` or methods called on instances, resolves at class level or not at all. Unresolvable `module.attr` references fall back to "anything in that module".
 - Data links come from string literals, so paths built entirely at runtime need a `[tool.graph-test.data]` entry.
 - Rust tests are selected per file or per module, not per `#[test]` function.
+- A test file's own module-level imports are still followed in full, so a test file that imports a module with heavy import-time side effects can be selected broadly. Conftests avoid this by default (`conftest-imports`).
 
 ## Development
 

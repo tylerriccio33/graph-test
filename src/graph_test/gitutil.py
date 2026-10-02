@@ -15,7 +15,17 @@ class GitError(RuntimeError):
 
 
 def _git(root: Path, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=False)
+    # Diffs routinely contain non-UTF-8 content (e.g. latin-1 corpora). surrogateescape
+    # never fails and round-trips any non-UTF-8 bytes in paths back to the filesystem.
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+        check=False,
+    )
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args)}: {proc.stderr.strip()}")
     return proc.stdout
