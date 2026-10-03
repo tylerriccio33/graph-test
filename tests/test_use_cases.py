@@ -665,3 +665,24 @@ def test_uc45_duplicate_names_map_to_own_lines(dispatch_repo: Path) -> None:
     assert {"render", "_@10", "_"} <= set(info["symbols"])
     assert pyscan.symbols_at(info, [(12, 12, False)]) == {"_@10"}  # int impl body
     assert pyscan.symbols_at(info, [(17, 17, False)]) == {"_"}  # str impl body
+
+
+# UC46: an import inside a function body runs when the function is called, so it is a
+# dependency of that function, not an import side effect of the module. A package
+# __init__ that imports its heavy pipeline lazily must not drag every submodule's
+# tests onto the pipeline.
+LAZY = {
+    "pkg/__init__.py": "def run():\n    from pkg import heavy\n\n    return heavy.go()\n",
+    "pkg/heavy.py": "SEEN = []\nSEEN.append(1)\n\n\ndef go():\n    return len(SEEN)\n",
+    "pkg/light.py": "def add(a, b):\n    return a + b\n",
+    "tests/test_light.py": "from pkg.light import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+    "tests/test_run.py": "from pkg import run\n\n\ndef test_run():\n    assert run() == 1\n",
+}
+
+
+def test_uc46_function_local_import_is_not_a_module_import(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path, LAZY)
+    edit(repo, "pkg/heavy.py", "append(1)", "append(2)")  # import-time code
+    got = selected_from_git(repo)
+    assert "tests/test_run.py::test_run" in got
+    assert "tests/test_light.py::test_add" not in got
