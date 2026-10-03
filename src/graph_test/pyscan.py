@@ -160,10 +160,21 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
     imports: dict[str, list[str]] = {}  # local alias -> [module, name or ""]
     stars: list[str] = []
     modules: set[str] = set()
+    # An import inside a function body runs when the function is called, not when the
+    # module loads: it names a dependency of that function (via `imports`), but is no
+    # import side effect of the module, so it stays out of `modules`.
+    deferred = {
+        id(n)
+        for fn in ast.walk(tree)
+        if isinstance(fn, (*_FUNC, ast.Lambda))
+        for n in ast.walk(fn)
+        if isinstance(n, (ast.Import, ast.ImportFrom))
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                modules.add(alias.name)
+                if id(node) not in deferred:
+                    modules.add(alias.name)
                 if alias.asname:
                     imports[alias.asname] = [alias.name, ""]
                 else:
@@ -179,13 +190,15 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
                 base = node.module or ""
             if not base:
                 continue
-            modules.add(base)
+            if id(node) not in deferred:
+                modules.add(base)
             for alias in node.names:
                 if alias.name == "*":
                     stars.append(base)
                 else:
                     imports[alias.asname or alias.name] = [base, alias.name]
-                    modules.add(f"{base}.{alias.name}")
+                    if id(node) not in deferred:
+                        modules.add(f"{base}.{alias.name}")
 
     symbols: dict[str, dict[str, Any]] = {}
     rest: list[ast.stmt] = []

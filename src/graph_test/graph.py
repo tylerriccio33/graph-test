@@ -27,7 +27,7 @@ from typing import Any
 from graph_test import pyscan, rsscan
 from graph_test.config import Config
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 
 @dataclass
