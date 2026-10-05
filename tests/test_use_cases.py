@@ -68,6 +68,13 @@ UC 43  singledispatch: editing code reached only by a `@f.register` implementati
        tests calling the dispatcher `f`.
 UC 44  Registrations in another module (`@other.f.register(T)`) are linked too.
 UC 45  Many `def _` in one module each map to their own lines (no name collision).
+
+Change risk (old vs new AST)
+UC 47  Formatting-only edits select nothing and aren't "unmapped".
+UC 48  Annotation-only edits select nothing with `checked = ["python"]`, but do without it.
+UC 49  A literal-only edit is low risk; a new name is medium unless type-checked.
+UC 50  A new branch outranks a literal edit at the same distance.
+UC 51  Class-level annotations (dataclass fields) still count under `checked`.
 """
 
 from __future__ import annotations
@@ -240,7 +247,10 @@ def selected_from_git(repo: Path) -> dict[str, Ranked]:
     """Rank using the real line-level diff of the working tree."""
     cfg = Config.load(repo)
     changes = gitutil.changed_hunks(repo, "main")
-    return {r.target.node: r for r in rank(cfg, build(cfg), changes, use_history=False).ranked}
+    result = rank(
+        cfg, build(cfg), changes, use_history=False, base=gitutil.merge_base(repo, "main")
+    )
+    return {r.target.node: r for r in result.ranked}
 
 
 def edit(repo: Path, rel: str, old: str, new: str) -> None:
@@ -675,7 +685,9 @@ LAZY = {
     "pkg/__init__.py": "def run():\n    from pkg import heavy\n\n    return heavy.go()\n",
     "pkg/heavy.py": "SEEN = []\nSEEN.append(1)\n\n\ndef go():\n    return len(SEEN)\n",
     "pkg/light.py": "def add(a, b):\n    return a + b\n",
-    "tests/test_light.py": "from pkg.light import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+    "tests/test_light.py": (
+        "from pkg.light import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+    ),
     "tests/test_run.py": "from pkg import run\n\n\ndef test_run():\n    assert run() == 1\n",
 }
 
@@ -686,3 +698,80 @@ def test_uc46_function_local_import_is_not_a_module_import(tmp_path: Path) -> No
     got = selected_from_git(repo)
     assert "tests/test_run.py::test_run" in got
     assert "tests/test_light.py::test_add" not in got
+
+
+RISKY = {
+    "pkg/__init__.py": "",
+    "pkg/core.py": (
+        "from dataclasses import dataclass\n\n\n"
+        "def greet(name):\n    print('hi')\n    return name\n\n\n"
+        "def pick(x):\n    return 1\n\n\n"
+        "def typed(a: int) -> int:\n    return a\n\n\n"
+        "@dataclass\nclass P:\n    x: int = 0\n"
+    ),
+    "tests/test_core.py": (
+        "from pkg.core import P, greet, pick, typed\n\n\n"
+        "def test_greet():\n    assert greet('a')\n\n\n"
+        "def test_pick():\n    assert pick(1)\n\n\n"
+        "def test_typed():\n    assert typed(1)\n\n\n"
+        "def test_p():\n    assert P().x == 0\n"
+    ),
+}
+
+
+@pytest.fixture
+def risky_repo(tmp_path: Path) -> Path:
+    return init_repo(tmp_path, RISKY)
+
+
+def _checked(repo: Path) -> None:
+    write_files(repo, {"pyproject.toml": '[tool.graph-test]\nchecked = ["python"]\n'})
+    git(repo, "add", "pyproject.toml")
+    git(repo, "commit", "-qm", "checked")
+
+
+def test_uc47_formatting_only_selects_nothing(risky_repo: Path) -> None:
+    edit(risky_repo, "pkg/core.py", "print('hi')", 'print(\n        "hi"\n    )')
+    cfg = Config.load(risky_repo)
+    changes = gitutil.changed_hunks(risky_repo, "main")
+    result = rank(cfg, build(cfg), changes, use_history=False, base="main")
+    assert result.ranked == [] and result.unmapped == []
+
+
+def test_uc48_annotation_only_edit(risky_repo: Path) -> None:
+    edit(risky_repo, "pkg/core.py", "def typed(a: int) -> int:", "def typed(a: float) -> float:")
+    assert "tests/test_core.py::test_typed" in selected_from_git(risky_repo)
+    _checked(risky_repo)
+    assert selected_from_git(risky_repo) == {}
+
+
+def test_uc49_literal_vs_new_name(risky_repo: Path) -> None:
+    edit(risky_repo, "pkg/core.py", "print('hi')", "print('bye')")
+    r = selected_from_git(risky_repo)["tests/test_core.py::test_greet"]
+    assert (r.risk, r.risk_why) == (0.2, "values only")
+
+    edit(risky_repo, "pkg/core.py", "print('bye')", "print(hello)")
+    r = selected_from_git(risky_repo)["tests/test_core.py::test_greet"]
+    assert (r.risk, r.risk_why) == (0.5, "new names: hello")
+    _checked(risky_repo)
+    assert selected_from_git(risky_repo)["tests/test_core.py::test_greet"].risk == 0.2
+
+
+def test_uc50_branch_outranks_literal(risky_repo: Path) -> None:
+    edit(risky_repo, "pkg/core.py", "print('hi')", "print('bye')")
+    edit(
+        risky_repo,
+        "pkg/core.py",
+        "    return 1\n",
+        "    if x > 2:\n        return 3\n    return 1\n",
+    )
+    got = selected_from_git(risky_repo)
+    pick, greet = got["tests/test_core.py::test_pick"], got["tests/test_core.py::test_greet"]
+    assert pick.risk == 1.0 and "branches" in pick.explain()
+    assert pick.score > greet.score
+
+
+def test_uc51_class_annotations_still_count(risky_repo: Path) -> None:
+    _checked(risky_repo)
+    edit(risky_repo, "pkg/core.py", "x: int = 0", "x: str = 0")
+    assert "tests/test_core.py::test_p" in selected_from_git(risky_repo)

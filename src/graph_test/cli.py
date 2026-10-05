@@ -26,10 +26,12 @@ def _setup(args: argparse.Namespace) -> tuple[Config, Graph]:
     return cfg, build(cfg)
 
 
-def _changes(cfg: Config, args: argparse.Namespace) -> Changes:
+def _changes(cfg: Config, args: argparse.Namespace) -> tuple[Changes, str | None]:
+    """The changes, and the commit they're against (None for ``--files``)."""
     if args.files:
-        return {str(Path(f)): None for f in args.files}
-    return gitutil.changed_hunks(cfg.root, args.base or gitutil.default_base(cfg.root))
+        return {str(Path(f)): None for f in args.files}, None
+    base = args.base or gitutil.default_base(cfg.root)
+    return gitutil.changed_hunks(cfg.root, base), gitutil.merge_base(cfg.root, base)
 
 
 def select(g: Graph, result: Result, args: argparse.Namespace) -> tuple[list[Ranked], str]:
@@ -107,7 +109,8 @@ def _print_summary(g: Graph, result: Result, selected: list[Ranked], why: str) -
 
 def cmd_rank(args: argparse.Namespace) -> int:
     cfg, g = _setup(args)
-    result = rank(cfg, g, _changes(cfg, args), use_history=not args.no_history)
+    changes, base = _changes(cfg, args)
+    result = rank(cfg, g, changes, use_history=not args.no_history, base=base)
     if args.affected or args.top:
         shown, why = select(g, result, args)
     else:
@@ -127,6 +130,7 @@ def cmd_rank(args: argparse.Namespace) -> int:
                     "distance": r.distance,
                     "cases": r.cases,
                     "command": r.target.command(),
+                    "risk": r.risk,
                     "why": r.explain(),
                 }
                 for r in shown
@@ -152,7 +156,8 @@ def cmd_rank(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     cfg, g = _setup(args)
-    result = rank(cfg, g, _changes(cfg, args), use_history=not args.no_history)
+    changes, base = _changes(cfg, args)
+    result = rank(cfg, g, changes, use_history=not args.no_history, base=base)
     selected, why = select(g, result, args)
     _print_summary(g, result, selected, why)
     if not selected:

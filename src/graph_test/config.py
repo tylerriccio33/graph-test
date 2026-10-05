@@ -66,6 +66,10 @@ class Config:
     # Explicit data dependencies: changed-file glob -> test node globs
     # (e.g. "tests/corpus/*" -> ["tests/test_corpus.py::test_corpus"]).
     data: dict[str, list[str]] = field(default_factory=dict)
+    # Languages whose code is type-checked before tests run (only "python" changes anything;
+    # Rust is always compiled). Annotation-only edits then select nothing, and edits whose
+    # only risk is an unresolved name rank low.
+    checked: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, root: Path) -> Config:
@@ -98,6 +102,8 @@ class Config:
             cfg.extra_test_globs = tuple(section["test-globs"])
         if "ignore" in section:
             cfg.ignore = tuple(section["ignore"])
+        if "checked" in section:
+            cfg.checked = tuple(str(x).lower() for x in section["checked"])
         if "data" in section:
             cfg.data = {str(k): [str(x) for x in v] for k, v in section["data"].items()}
         return cfg

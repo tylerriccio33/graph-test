@@ -36,7 +36,16 @@ Case narrowing needs graph-test installed in the environment where the tests run
 
 **Safety in gate mode.** A changed file the graph can't place makes `run` run everything (`--on-unmapped all`, the default). A changed global file does the same. Ignored paths (`*.md`, `docs/*`, ...) never select anything.
 
-**Ranking.** A test scores `graph_weight / (1 + hops)`, plus a git co-change score (at least 2 shared commits; root commits and commits touching more than 50 files are skipped). In gate mode, tests linked only by history are added with `--include-history`.
+**Change risk.** Each edited Python symbol is compared with its version at the merge-base:
+
+- Edits that leave the AST unchanged, such as reformatting or quote changes, select nothing, like comment edits.
+- Other edits get a risk weight based on what changed: branches (`if`, loops, `try`, `and`/`or`) 1.0, `return`/`raise` 0.8, calls 0.6, new names or attributes 0.5, other 0.4, only literal values 0.2. Module-level code and new symbols always weigh 1.0. `--explain` shows the reason, e.g. `risk 0.2 (values only)`.
+
+Risk only changes ranking. Gate mode still runs every affected test, because even `print('hi')` can break a test that checks output.
+
+With `checked = ["python"]`, graph-test assumes a type checker (mypy, pyright, pyrefly) runs before the tests. Edits to function annotations, local annotations and `if TYPE_CHECKING:` blocks then select nothing. New names no longer raise the risk, since the checker catches unresolved ones, so `print('hi')` → `print(hello)` stays at 0.2. Class-level annotations still count because dataclasses and similar tools act on them. Rust edits are not risk-weighted: they are tracked per file, and the compiler already rejects unresolved code.
+
+**Ranking.** A test scores `graph_weight * risk / (1 + hops)`, plus a git co-change score (at least 2 shared commits; root commits and commits touching more than 50 files are skipped). In gate mode, tests linked only by history are added with `--include-history`.
 
 ## Config (`pyproject.toml`)
 
@@ -49,6 +58,9 @@ test-globs = ["integration/*_check.py"]
 # "fixtures-only" (default): tests depend on a conftest's own code, hooks, autouse fixtures
 # and the fixtures they request. "all": also on everything the conftest imports.
 conftest-imports = "fixtures-only"
+# Languages type-checked before tests run: annotation-only edits select nothing and
+# unresolved-name risk is ignored.
+checked = ["python"]
 
 [tool.graph-test.data]
 "tests/integration/code/*" = ["tests/test_integration.py::test_code*"]

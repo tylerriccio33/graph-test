@@ -51,18 +51,30 @@ Hunk = tuple[int, int, bool]
 Changes = dict[str, list[Hunk] | None]
 
 
+def merge_base(root: Path, base: str) -> str:
+    try:
+        return _git(root, "merge-base", base, "HEAD").strip()
+    except GitError:
+        return base
+
+
+def show(root: Path, rev: str, path: str) -> str | None:
+    """Contents of ``path`` at ``rev``, or None if it didn't exist there."""
+    try:
+        return _git(root, "show", f"{rev}:{path}")
+    except GitError:
+        return None
+
+
 def changed_hunks(root: Path, base: str) -> Changes:
     """Changes vs the merge-base with ``base``, including uncommitted and untracked files."""
-    try:
-        merge_base = _git(root, "merge-base", base, "HEAD").strip()
-    except GitError:
-        merge_base = base
+    mb = merge_base(root, base)
     q = ("-c", "core.quotePath=false")
     out: Changes = {}
-    for f in _git(root, *q, "diff", "--no-renames", "--name-only", merge_base).splitlines():
+    for f in _git(root, *q, "diff", "--no-renames", "--name-only", mb).splitlines():
         if f:
             out[f] = None
-    diff = _git(root, *q, "diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0", merge_base)
+    diff = _git(root, *q, "diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0", mb)
     new = ""
     for line in diff.splitlines():
         if line.startswith("+++ "):
