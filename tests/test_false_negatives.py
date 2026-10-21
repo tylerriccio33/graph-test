@@ -1,14 +1,14 @@
 """False-negative hunt: changes that must select tests, in the git and Python-scan layers.
 
-UC 52  Fixture overrides: a fixture that requests its own name depends on the parent's.
-UC 53  `@pytest.fixture(name=...)` is requested by that name, not the function name.
-UC 54  `usefixtures` (decorator, class, module `pytestmark`) and `getfixturevalue("x")`.
-UC 55  Fixtures imported into a test module resolve to their definition.
-UC 56  `pytest_plugins = [...]` strings link the conftest's tests to the plugin module.
-UC 57  Paths with spaces diff at line level; a renamed file selects importers of the old path.
-UC 58  `importlib.import_module("x")` with a literal links to the module.
-UC 59  Tests defined under a module-level `if`/`try` are still found.
-UC 60  Quoted/odd paths in diffs don't lose hunks.
+UC 57  Fixture overrides: a fixture that requests its own name depends on the parent's.
+UC 58  `@pytest.fixture(name=...)` is requested by that name, not the function name.
+UC 59  `usefixtures` (decorator, class, module `pytestmark`) and `getfixturevalue("x")`.
+UC 60  Fixtures imported into a test module resolve to their definition.
+UC 61  `pytest_plugins = [...]` strings link the conftest's tests to the plugin module.
+UC 62  Paths with spaces diff at line level; a renamed file selects importers of the old path.
+UC 63  `importlib.import_module("x")` with a literal links to the module.
+UC 64  Tests defined under a module-level `if`/`try` are still found.
+UC 65  Quoted/odd paths in diffs don't lose hunks.
 """
 
 from __future__ import annotations
