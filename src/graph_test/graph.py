@@ -27,7 +27,7 @@ from typing import Any
 from graph_test import pyscan, rsscan
 from graph_test.config import Config
 
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 
 
 @dataclass
@@ -393,6 +393,7 @@ class _PythonBuilder:
         self.conftest_all = cfg.conftest_imports == "all"
         self.code_dirs: set[Path] = {Path(".")}
         self.by_name: dict[str, list[Path]] | None = None
+        self._fx: dict[str, dict[str, str]] = {}
 
     # ------------------------------------------------------------------ setup
 
@@ -513,17 +514,48 @@ class _PythonBuilder:
                 return hit
         return None
 
-    def _resolve_fixture(self, file: Path, name: str) -> str | None:
-        sym = self.infos[str(file)]["symbols"].get(name)
-        if sym and sym.get("fixture"):
-            return f"{file}::{name}"
+    def _fixtures_defined(self, file: str) -> dict[str, str]:
+        """Fixture name -> symbol node for fixtures defined in ``file`` (honoring ``name=``)."""
+        cached = self._fx.get(file)
+        if cached is None:
+            cached = {}
+            for qual, sym in self.infos[file]["symbols"].items():
+                if sym.get("fixture"):
+                    cached[sym.get("fname") or qual.partition("@")[0]] = f"{file}::{qual}"
+            self._fx[file] = cached
+        return cached
+
+    def _fixture_in(self, file: str, name: str, skip: str | None) -> str | None:
+        """The fixture ``name`` as seen from ``file``: defined there or imported into it."""
+        hit = self._fixtures_defined(file).get(name)
+        if hit and hit != skip:
+            return hit
+        info = self.infos[file]
+        imp = info["imports"].get(name)
+        cands = []
+        if imp and imp[1]:
+            cands.append(self._resolve_name(imp[0], imp[1]))
+        cands += [self._resolve_name(star, name) for star in info["stars"]]
+        for node in cands:
+            tfile, _, qual = (node or "").partition("::")
+            sym = self.infos.get(tfile, {}).get("symbols", {}).get(qual)
+            if sym and sym.get("fixture") and node != skip:
+                return node
+        return None
+
+    def _resolve_fixture(self, file: Path, name: str, skip: str | None = None) -> str | None:
+        """``skip`` is the requesting fixture itself: one that asks for its own name is an
+        override and depends on the fixture it shadows, further up."""
+        hit = self._fixture_in(str(file), name, skip)
+        if hit:
+            return hit
         d = file.parent
         while True:
             conf = self.conftests.get(d)
             if conf and conf != str(file):
-                csym = self.infos[conf]["symbols"].get(name)
-                if csym and csym.get("fixture"):
-                    return f"{conf}::{name}"
+                hit = self._fixture_in(conf, name, skip)
+                if hit:
+                    return hit
             if d == Path("."):
                 return None
             d = d.parent
@@ -596,6 +628,12 @@ class _PythonBuilder:
         for lit in entry.get("lits", ()):
             for target in self._resolve_literal(file, lit):
                 self.g.add_edge(src, target)
+        for mod in entry.get("dyn", ()):  # importlib.import_module("a.b")
+            target = self.modules.get(mod)
+            if target and target != src:
+                self.g.add_edge(src, self._whole(target))
+            elif not target and mod.split(".")[0] in self.internal_tops:
+                self.g.add_edge(src, f"missing:{mod}")
 
     def _wire(self, f: Path) -> None:
         g = self.g
@@ -622,6 +660,12 @@ class _PythonBuilder:
             if init:
                 g.add_edge(file, init)
 
+        for plugin in info.get("plugins", ()):
+            target = self.modules.get(plugin)
+            if target and target != file:
+                # Its fixtures and hooks apply to every test under this file's directory.
+                g.add_edge(f"{file}#self" if f.name == "conftest.py" else file, self._whole(target))
+
         stub_crate = self.pyo3.get(module) or self.pyo3.get(parts[-1])
         if stub_crate:
             # Importing the extension runs its #[pymodule] init: depend on the crate root's
@@ -634,11 +678,14 @@ class _PythonBuilder:
             node = f"{file}::{qual}"
             g.add_node(node)
             self._wire_refs(node, f, info, sym)
-            for arg in sym.get("args", ()):
-                if arg not in _SKIP_FIXTURE_ARGS:
-                    fx = self._resolve_fixture(f, arg)
-                    if fx and fx != node:
-                        g.add_edge(node, fx)
+            requested = [a for a in sym.get("args", ()) if a not in _SKIP_FIXTURE_ARGS]
+            requested += sym.get("uses", ())
+            for arg in requested:
+                fx = self._resolve_fixture(f, arg, node if sym.get("fixture") else None)
+                if fx and fx != node:
+                    g.add_edge(node, fx)
+            if "pytestmark" in info["symbols"] and qual != "pytestmark" and not sym.get("fixture"):
+                g.add_edge(node, f"{file}::pytestmark")
             if sym.get("parent"):
                 g.add_edge(node, f"{file}::{sym['parent']}")
             else:
