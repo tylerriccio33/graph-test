@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -54,6 +55,19 @@ def init_repo(root: Path, files: dict[str, str]) -> Path:
     git(root, "add", "-A")
     git(root, "commit", "-qm", "init")
     return root
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep git (ours and the code under test) independent of the developer's config."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(k, raising=False)
+    for who in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{who}_NAME", "t")
+        monkeypatch.setenv(f"GIT_{who}_EMAIL", "t@example.com")
+        monkeypatch.setenv(f"GIT_{who}_DATE", "2024-01-01T00:00:00+0000")
 
 
 @pytest.fixture
