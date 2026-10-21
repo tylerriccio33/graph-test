@@ -80,6 +80,8 @@ Expected-value modules
 UC 52  A module object used dynamically (`getattr(expected, name)`) depends on all of it.
 UC 53  A .py file loaded by path (runpy/importlib) is linked like an import of all of it.
 UC 54  Every symbol depends on its module's import-time code (`CASES.update(...)`).
+UC 55  A golden `expected.py` read via `case_dir / "expected.py"` selects just its case.
+UC 56  A changed .py under tests/ that no test reaches is unmapped (so `run` runs all).
 """
 
 from __future__ import annotations
@@ -825,3 +827,54 @@ def test_uc54_symbols_depend_on_their_modules_import_time_code(tmp_path: Path) -
     edit(repo, "tests/expected.py", "OTHER = 2\n", "OTHER = 2\nCASES.update(b=3)\n")
     got = selected_from_git(repo)
     assert {"tests/test_getattr.py::test_ga", "tests/test_lazy.py::test_lazy"} <= set(got)
+
+
+# Golden files that happen to be .py (sas-ir): never imported, read as text by a helper.
+GOLDEN = {
+    "pytest.ini": "[pytest]\naddopts = -p no:cacheprovider\n",
+    "tests/fixtures/grp/a/input.txt": "a\n",
+    "tests/fixtures/grp/a/expected.py": "A = 1\n",
+    "tests/fixtures/grp/b/input.txt": "b\n",
+    "tests/fixtures/grp/b/expected.py": "B = 1\n",
+    "tests/fixtures/snapshot.py": (
+        "from dataclasses import dataclass\nfrom pathlib import Path\n\n\n"
+        "@dataclass(frozen=True)\nclass Case:\n    path: Path\n\n    @property\n"
+        "    def id(self):\n        return f'{self.path.parent.name}/{self.path.name}'\n\n\n"
+        "def discover(root):\n"
+        "    return [Case(p.parent) for p in sorted(root.rglob('input.txt'))]\n\n\n"
+        "def run_case(case):\n    expected_py = case.path / 'expected.py'\n"
+        "    assert expected_py.read_text()\n"
+    ),
+    "tests/fixtures/test_fixtures.py": (
+        "from pathlib import Path\n\nimport pytest\n"
+        "from snapshot import discover, run_case\n\n"
+        "CASES = discover(Path(__file__).parent)\n\n\n"
+        "@pytest.mark.parametrize('case', [pytest.param(c, id=c.id) for c in CASES])\n"
+        "def test_fixture(case):\n    run_case(case)\n"
+    ),
+    "tests/stray.py": "X = 1\n",
+}
+
+
+def test_uc55_golden_py_file_read_by_computed_path(tmp_path: Path, capfd) -> None:
+    repo = init_repo(tmp_path, GOLDEN)
+    edit(repo, "tests/fixtures/grp/a/expected.py", "A = 1", "A = 2")
+    got = selected_from_git(repo)
+    assert got["tests/fixtures/test_fixtures.py::test_fixture"].cases == [
+        "tests/fixtures/grp/a/expected.py"
+    ]
+    rc = main(
+        ["-C", str(repo), "run", "--no-history", "--pytest", f"{sys.executable} -m pytest -v"]
+    )
+    out = capfd.readouterr().out
+    assert rc == 0, out
+    assert "test_fixture[grp/a] PASSED" in out
+    assert "test_fixture[grp/b]" not in out
+
+
+def test_uc56_unreached_py_under_tests_is_unmapped(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path, GOLDEN)
+    edit(repo, "tests/stray.py", "X = 1", "X = 2")
+    cfg = Config.load(repo)
+    result = rank(cfg, build(cfg), gitutil.changed_hunks(repo, "main"), use_history=False)
+    assert result.unmapped == ["tests/stray.py"]
