@@ -75,6 +75,11 @@ UC 48  Annotation-only edits select nothing with `checked = ["python"]`, but do 
 UC 49  A literal-only edit is low risk; a new name is medium unless type-checked.
 UC 50  A new branch outranks a literal edit at the same distance.
 UC 51  Class-level annotations (dataclass fields) still count under `checked`.
+
+Expected-value modules
+UC 52  A module object used dynamically (`getattr(expected, name)`) depends on all of it.
+UC 53  A .py file loaded by path (runpy/importlib) is linked like an import of all of it.
+UC 54  Every symbol depends on its module's import-time code (`CASES.update(...)`).
 """
 
 from __future__ import annotations
@@ -775,3 +780,48 @@ def test_uc51_class_annotations_still_count(risky_repo: Path) -> None:
     _checked(risky_repo)
     edit(risky_repo, "pkg/core.py", "x: int = 0", "x: str = 0")
     assert "tests/test_core.py::test_p" in selected_from_git(risky_repo)
+
+
+# ---------------------------------------------------------------- Expected-value modules
+
+EXPECTED = {
+    "pytest.ini": "[pytest]\npythonpath = .\n",
+    "tests/__init__.py": "",
+    "tests/expected.py": "CASES = {\n    'a': 1,\n}\nOTHER = 2\n",
+    "tests/loader.py": "def load():\n    from tests import expected\n\n    return expected\n",
+    "tests/test_getattr.py": (
+        "from tests import expected\n\n\n"
+        "def test_ga():\n    assert getattr(expected, 'CA' + 'SES')\n"
+    ),
+    "tests/test_runpy.py": (
+        "import runpy\nfrom pathlib import Path\n\n\ndef test_rp():\n"
+        "    assert runpy.run_path(str(Path(__file__).parent / 'expected.py'))['CASES']\n"
+    ),
+    "tests/test_other.py": (
+        "from tests import expected\n\n\ndef test_other():\n    assert expected.OTHER\n"
+    ),
+    "tests/test_lazy.py": (
+        "from tests.loader import load\n\n\ndef test_lazy():\n    assert load().CASES\n"
+    ),
+}
+
+
+def test_uc52_module_object_used_dynamically(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path, EXPECTED)
+    edit(repo, "tests/expected.py", "'a': 1", "'a': 5")
+    got = selected_from_git(repo)
+    assert "tests/test_getattr.py::test_ga" in got
+    assert "tests/test_other.py::test_other" not in got  # `expected.OTHER` stays precise
+
+
+def test_uc53_module_loaded_by_path(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path, EXPECTED)
+    edit(repo, "tests/expected.py", "'a': 1", "'a': 5")
+    assert "tests/test_runpy.py::test_rp" in selected_from_git(repo)
+
+
+def test_uc54_symbols_depend_on_their_modules_import_time_code(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path, EXPECTED)
+    edit(repo, "tests/expected.py", "OTHER = 2\n", "OTHER = 2\nCASES.update(b=3)\n")
+    got = selected_from_git(repo)
+    assert {"tests/test_getattr.py::test_ga", "tests/test_lazy.py::test_lazy"} <= set(got)

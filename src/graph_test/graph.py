@@ -480,7 +480,10 @@ class _PythonBuilder:
         while rest and f"{module}.{rest[0]}" in self.modules:
             module, rest = f"{module}.{rest[0]}", rest[1:]
         if not rest:
-            return self._module_target(module)
+            # A bare module object (getattr(mod, name), vars(mod), passed along) can reach
+            # any of its names.
+            target = self._module_target(module)
+            return self._whole(target) if target in self.infos else target
         hit = self._resolve_name(module, rest[0])
         if hit:
             return hit
@@ -543,7 +546,10 @@ class _PythonBuilder:
             if p.parts and p.parts[0] == "..":
                 continue
             if p in self.w.files:
-                if p.suffix in (".py", ".pyi", ".rs"):
+                if p.suffix in (".py", ".pyi"):
+                    # Loaded by path (runpy, importlib, exec): depends on all of it.
+                    return self._whole(str(p)) if str(p) in self.infos else None
+                if p.suffix == ".rs":
                     return None
                 self.g.data_nodes.add(str(p))
                 return str(p)
@@ -613,6 +619,9 @@ class _PythonBuilder:
                         g.add_edge(node, fx)
             if sym.get("parent"):
                 g.add_edge(node, f"{file}::{sym['parent']}")
+            else:
+                # Nothing in a module is usable before its import-time code has run.
+                g.add_edge(node, file)
             for dispatcher in sym.get("registers", ()):
                 # The dispatcher calls every registered implementation at runtime.
                 target = self._resolve_ref(file, info, dispatcher)
