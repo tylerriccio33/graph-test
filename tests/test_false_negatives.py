@@ -61,7 +61,7 @@ def fixt_repo(tmp_path: Path) -> Path:
     return init_repo(tmp_path, FIXT)
 
 
-def test_uc52_fixture_override_depends_on_parent(fixt_repo: Path) -> None:
+def test_uc57_fixture_override_depends_on_parent(fixt_repo: Path) -> None:
     edit(
         fixt_repo,
         "tests/conftest.py",
@@ -71,7 +71,7 @@ def test_uc52_fixture_override_depends_on_parent(fixt_repo: Path) -> None:
     assert "tests/sub/test_sub.py::test_sub" in selected_from_git(fixt_repo)
 
 
-def test_uc53_renamed_fixture(fixt_repo: Path) -> None:
+def test_uc58_renamed_fixture(fixt_repo: Path) -> None:
     edit(
         fixt_repo,
         "tests/conftest.py",
@@ -81,7 +81,7 @@ def test_uc53_renamed_fixture(fixt_repo: Path) -> None:
     assert "tests/test_ren.py::test_ren" in selected_from_git(fixt_repo)
 
 
-def test_uc54_usefixtures_and_getfixturevalue(fixt_repo: Path) -> None:
+def test_uc59_usefixtures_and_getfixturevalue(fixt_repo: Path) -> None:
     edit(
         fixt_repo,
         "tests/conftest.py",
@@ -96,7 +96,7 @@ def test_uc54_usefixtures_and_getfixturevalue(fixt_repo: Path) -> None:
     assert "tests/test_gfv.py::test_none" not in got
 
 
-def test_uc55_imported_fixture(fixt_repo: Path) -> None:
+def test_uc60_imported_fixture(fixt_repo: Path) -> None:
     edit(fixt_repo, "tests/fixtures_mod.py", "return 1", "return 2")
     assert "tests/test_imp.py::test_imp" in selected_from_git(fixt_repo)
 
@@ -120,7 +120,7 @@ PLUG = {
 }
 
 
-def test_uc56_pytest_plugins(tmp_path: Path) -> None:
+def test_uc61_pytest_plugins(tmp_path: Path) -> None:
     repo = init_repo(tmp_path, PLUG)
     edit(repo, "plugins/myplug.py", "return base()", "return 2")
     assert "tests/test_plug.py::test_plug" in selected_from_git(repo)
@@ -128,7 +128,7 @@ def test_uc56_pytest_plugins(tmp_path: Path) -> None:
     assert "tests/test_plug.py::test_plug" in selected_from_git(repo)
 
 
-def test_uc58_import_module_literal(tmp_path: Path) -> None:
+def test_uc63_import_module_literal(tmp_path: Path) -> None:
     repo = init_repo(tmp_path, PLUG)
     edit(repo, "plugins/dyn.py", "return 1", "return 2")
     got = selected_from_git(repo)
@@ -136,7 +136,7 @@ def test_uc58_import_module_literal(tmp_path: Path) -> None:
     assert "tests/test_other.py::test_other" not in got
 
 
-def test_uc57_spaces_and_renames(tmp_path: Path) -> None:
+def test_uc62_spaces_and_renames(tmp_path: Path) -> None:
     files = {
         "pkg/__init__.py": "",
         "pkg/my mod.py": "def f():\n    return 1\n\n\ndef g():\n    return 1\n",
@@ -152,7 +152,7 @@ def test_uc57_spaces_and_renames(tmp_path: Path) -> None:
     assert "tests/test_mv.py::test_h" in selected_from_git(repo)
 
 
-def test_uc59_tests_under_module_level_if(tmp_path: Path) -> None:
+def test_uc64_tests_under_module_level_if(tmp_path: Path) -> None:
     files = {
         "pkg/__init__.py": "",
         "pkg/core.py": "def base():\n    return 1\n",
@@ -166,7 +166,7 @@ def test_uc59_tests_under_module_level_if(tmp_path: Path) -> None:
     assert "tests/test_cond.py::test_cond" in selected_from_git(repo)
 
 
-def test_uc60_quoted_paths(tmp_path: Path) -> None:
+def test_uc65_quoted_paths(tmp_path: Path) -> None:
     name = 'pkg/we"ird\tname.py'
     files = {"pkg/__init__.py": "", name: "def f():\n    return 1\n"}
     repo = init_repo(tmp_path, files)
