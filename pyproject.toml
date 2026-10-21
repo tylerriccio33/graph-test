@@ -12,7 +12,13 @@ graph-test = "graph_test.cli:main"
 graph_test = "graph_test.pytest_plugin"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6", "pyrefly>=0.30"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "pyrefly>=0.30",
+    "pytest-xdist>=3.8.0",
+    "pytest-randomly>=5.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]

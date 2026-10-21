@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,18 @@ FILES = {
     "python/tests/test_fast.py": "from pkg.fast import _native\n",
     "python/tests/test_alone.py": "import os\n",
 }
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fixture repos must not depend on the developer's git setup: GIT_DIR & co. (set when
+    # pytest runs from a git hook) redirect every command away from tmp_path, and global
+    # config such as commit.gpgsign or init.templateDir hooks makes `git commit` fail.
+    for var in list(os.environ):
+        if var.startswith("GIT_"):
+            monkeypatch.delenv(var)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def git(root: Path, *args: str) -> None:
