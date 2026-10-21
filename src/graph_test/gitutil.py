@@ -66,20 +66,55 @@ def show(root: Path, rev: str, path: str) -> str | None:
         return None
 
 
+_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def _diff_path(raw: str) -> str:
+    """Path from a ``+++`` header: git appends a tab after names containing spaces and
+    C-quotes names with quotes, backslashes or control characters."""
+    if not raw.startswith('"'):
+        return raw.rstrip("\t") if raw.endswith("\t") and "\t" not in raw[:-1] else raw
+    body = raw[1 : raw.rindex('"')]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == "\\" and i + 1 < len(body):
+            n = body[i + 1]
+            if n in _ESCAPES:
+                out.append(_ESCAPES[n])
+                i += 2
+                continue
+            m = re.match(r"[0-7]{1,3}", body[i + 1 :])
+            if m:
+                out.append(int(m.group(), 8) & 0xFF)
+                i += 1 + len(m.group())
+                continue
+        out += c.encode("utf-8", "surrogateescape")
+        i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def changed_hunks(root: Path, base: str) -> Changes:
     """Changes vs the merge-base with ``base``, including uncommitted and untracked files."""
     mb = merge_base(root, base)
     q = ("-c", "core.quotePath=false")
     out: Changes = {}
-    for f in _git(root, *q, "diff", "--no-renames", "--name-only", mb).splitlines():
+    for f in _git(root, *q, "diff", "--no-renames", "--name-only", "-z", mb).split("\0"):
         if f:
             out[f] = None
-    diff = _git(root, *q, "diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0", mb)
+    diff = _git(
+        root, *q, "diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-prefix", "-U0", mb
+    )
     new = ""
-    for line in diff.splitlines():
-        if line.startswith("+++ "):
-            new = line[4:].removeprefix("b/")
+    header = False  # only a header's "+++ " names a file; an added line "++ x" looks the same
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            header = True
+        elif header and line.startswith("+++ "):
+            new = _diff_path(line[4:])
         elif line.startswith("@@"):
+            header = False
             if new == "/dev/null":
                 continue  # deleted file: stays None
             path = new
@@ -93,7 +128,7 @@ def changed_hunks(root: Path, base: str) -> Changes:
             else:
                 hunks.append((start, start + count - 1, False))
             out[path] = hunks
-    for f in _git(root, *q, "ls-files", "--others", "--exclude-standard").splitlines():
+    for f in _git(root, *q, "ls-files", "--others", "--exclude-standard", "-z").split("\0"):
         if f:
             out[f] = None
     return out

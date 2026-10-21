@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -87,8 +88,11 @@ def _span(node: ast.stmt) -> list[int]:
     return [start, node.end_lineno or node.lineno]
 
 
-def _fixture_flags(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, bool]:
+def _fixture_flags(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[bool, bool, str | None]:
     fixture = autouse = False
+    name = None
     for d in node.decorator_list:
         target = d.func if isinstance(d, ast.Call) else d
         if dotted(target).endswith("fixture"):
@@ -98,7 +102,37 @@ def _fixture_flags(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, 
                     k.arg == "autouse" and isinstance(k.value, ast.Constant) and k.value.value
                     for k in d.keywords
                 )
-    return fixture, autouse
+                for k in d.keywords:
+                    if k.arg == "name" and isinstance(k.value, ast.Constant):
+                        name = str(k.value.value)
+    return fixture, autouse, name
+
+
+_STR_ARGS = {"usefixtures": "uses", "getfixturevalue": "uses"}
+_DYN_IMPORTS = ("import_module", "__import__")
+
+
+def _dynamic(node: ast.AST, exclude: set[int]) -> dict[str, list[str]]:
+    """String-named dependencies: fixtures requested by name (``usefixtures("x")``,
+    ``request.getfixturevalue("x")``) and modules imported by literal name
+    (``importlib.import_module("a.b")``)."""
+    out: dict[str, set[str]] = {}
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if id(n) in exclude:
+            continue
+        if isinstance(n, ast.Call):
+            tail = dotted(n.func).rpartition(".")[2]
+            strs = [
+                a.value for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)
+            ]
+            if tail in _STR_ARGS:
+                out.setdefault("uses", set()).update(strs)
+            elif tail in _DYN_IMPORTS and strs:
+                out.setdefault("dyn", set()).add(strs[0])
+        stack.extend(ast.iter_child_nodes(n))
+    return {k: sorted(v) for k, v in out.items()}
 
 
 def _symbol(node: ast.stmt, kind: str, exclude: set[int] | None = None) -> dict[str, Any]:
@@ -106,12 +140,15 @@ def _symbol(node: ast.stmt, kind: str, exclude: set[int] | None = None) -> dict[
     sym: dict[str, Any] = {"kind": kind, "spans": [_span(node)], "refs": sorted(refs)}
     if lits:
         sym["lits"] = sorted(lits)
+    sym.update(_dynamic(node, exclude or set()))
     if isinstance(node, _FUNC):
         a = node.args
         sym["args"] = [x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
-        fixture, autouse = _fixture_flags(node)
+        fixture, autouse, fname = _fixture_flags(node)
         if fixture:
             sym["fixture"] = True
+            if fname:
+                sym["fname"] = fname
         if autouse:
             sym["autouse"] = True
         registers = _registrations(node)
@@ -146,8 +183,30 @@ def _add_def(symbols: dict[str, dict[str, Any]], name: str, sym: dict[str, Any])
 def _merge(into: dict[str, Any], other: dict[str, Any]) -> None:
     into["spans"] += other["spans"]
     into["refs"] = sorted(set(into["refs"]) | set(other["refs"]))
+    for key in ("uses", "dyn"):
+        if key in other:
+            into[key] = sorted(set(into.get(key, [])) | set(other[key]))
     if "lits" in other:
         into["lits"] = sorted(set(into.get("lits", [])) | set(other["lits"]))
+
+
+def _toplevel(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Module-level statements, looking inside ``if``/``try``/``with`` blocks so a def under
+    ``if sys.platform...`` or ``try: ... except ImportError:`` is still a symbol. The
+    enclosing statement is yielded too, as module-level code."""
+    for stmt in body:
+        if isinstance(stmt, ast.If):
+            yield stmt
+            yield from _toplevel(stmt.body + stmt.orelse)
+        elif isinstance(stmt, ast.Try):
+            yield stmt
+            inner = stmt.body + [x for h in stmt.handlers for x in h.body]
+            yield from _toplevel(inner + stmt.orelse + stmt.finalbody)
+        elif isinstance(stmt, ast.With):
+            yield stmt
+            yield from _toplevel(stmt.body)
+        else:
+            yield stmt
 
 
 def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
@@ -203,7 +262,7 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
     symbols: dict[str, dict[str, Any]] = {}
     rest: list[ast.stmt] = []
     inert: list[list[int]] = []  # docstrings / bare constants: changing them affects nothing
-    for stmt in tree.body:
+    for stmt in _toplevel(tree.body):
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
             inert.append(_span(stmt))
         elif isinstance(stmt, _FUNC):
@@ -239,6 +298,17 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
         elif not isinstance(stmt, (ast.Import, ast.ImportFrom)):
             rest.append(stmt)
 
+    plugins: list[str] = []
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            if any(isinstance(t, ast.Name) and t.id == "pytest_plugins" for t in targets):
+                plugins += [
+                    n.value
+                    for n in ast.walk(stmt.value)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                ]
+
     mod_refs: set[str] = set()
     mod_lits: set[str] = set()
     for stmt in rest:
@@ -248,6 +318,9 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
     mod: dict[str, Any] = {"refs": sorted(mod_refs)}
     if mod_lits:
         mod["lits"] = sorted(mod_lits)
+    for stmt in rest:
+        for key, vals in _dynamic(stmt, set()).items():
+            mod[key] = sorted(set(mod.get(key, [])) | set(vals))
     return {
         "imports": imports,
         "stars": stars,
@@ -255,6 +328,7 @@ def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
         "symbols": symbols,
         "module": mod,
         "inert": inert,
+        "plugins": plugins,
     }
 
 
