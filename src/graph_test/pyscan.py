@@ -69,7 +69,9 @@ def _collect(node: ast.AST, exclude: set[int]) -> tuple[set[str], set[str]]:
         elif isinstance(n, ast.Attribute):
             chain = dotted(n)
             if chain:
+                # The whole chain only: its root Name alone would read as a bare use.
                 refs.add(chain)
+                continue
         elif (
             isinstance(n, ast.Constant)
             and isinstance(n.value, str)

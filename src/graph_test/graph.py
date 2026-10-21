@@ -392,6 +392,7 @@ class _PythonBuilder:
         self.conftests: dict[Path, str] = {}
         self.conftest_all = cfg.conftest_imports == "all"
         self.code_dirs: set[Path] = {Path(".")}
+        self.by_name: dict[str, list[Path]] | None = None
 
     # ------------------------------------------------------------------ setup
 
@@ -480,7 +481,10 @@ class _PythonBuilder:
         while rest and f"{module}.{rest[0]}" in self.modules:
             module, rest = f"{module}.{rest[0]}", rest[1:]
         if not rest:
-            return self._module_target(module)
+            # A bare module object (getattr(mod, name), vars(mod), passed along) can reach
+            # any of its names.
+            target = self._module_target(module)
+            return self._whole(target) if target in self.infos else target
         hit = self._resolve_name(module, rest[0])
         if hit:
             return hit
@@ -524,15 +528,37 @@ class _PythonBuilder:
                 return None
             d = d.parent
 
-    def _resolve_literal(self, file: Path, lit: str) -> str | None:
-        """Map a path-like string literal to a data file or directory node."""
+    def _resolve_literal(self, file: Path, lit: str) -> list[str]:
+        """Map a path-like string literal to data file or directory nodes."""
+        hit = self._resolve_path(file, lit)
+        if hit is not None:
+            return [hit] if hit else []
+        name = lit.strip()
+        if "/" in name or not Path(name).suffix or Path(name).suffix == ".rs":
+            return []
+        # A bare file name not next to the file, e.g. `case_dir / "expected.py"` with
+        # `case_dir` computed at runtime: any file of that name below this one's directory.
+        if self.by_name is None:
+            self.by_name = {}
+            for p in self.w.files:
+                self.by_name.setdefault(p.name, []).append(p)
+        out = []
+        for p in self.by_name.get(name, ()):
+            if p != file and p.is_relative_to(file.parent):
+                self.g.data_nodes.add(str(p))
+                out.append(str(p))
+        return out
+
+    def _resolve_path(self, file: Path, lit: str) -> str | None:
+        """A literal resolved as a path: its node, ``""`` if it resolves (or can't) to
+        nothing trackable, ``None`` if no such path exists."""
         text = lit.strip()
         if not text or text.startswith(("/", "http:", "https:", "~")):
-            return None
+            return ""
         cut = min((text.index(c) for c in _GLOB_CHARS if c in text), default=len(text))
         text = text[:cut].removeprefix("./").rstrip("/")
         if not text or text in (".", ".."):
-            return None
+            return ""
         rel = Path(text)
         # Bare names ("corpus") only resolve next to the file; paths also search upward.
         bases = [file.parent]
@@ -543,13 +569,16 @@ class _PythonBuilder:
             if p.parts and p.parts[0] == "..":
                 continue
             if p in self.w.files:
-                if p.suffix in (".py", ".pyi", ".rs"):
-                    return None
+                if p.suffix in (".py", ".pyi"):
+                    # Loaded by path (runpy, importlib, exec): depends on all of it.
+                    return self._whole(str(p)) if str(p) in self.infos else ""
+                if p.suffix == ".rs":
+                    return ""
                 self.g.data_nodes.add(str(p))
                 return str(p)
             if p in self.w.dirs:
                 if p in self.code_dirs or file.is_relative_to(p):
-                    return None
+                    return ""
                 node = f"data:{p}"
                 self.g.data_nodes.add(node)
                 return node
@@ -565,8 +594,7 @@ class _PythonBuilder:
             if target and target != src:
                 self.g.add_edge(src, target)
         for lit in entry.get("lits", ()):
-            target = self._resolve_literal(file, lit)
-            if target:
+            for target in self._resolve_literal(file, lit):
                 self.g.add_edge(src, target)
 
     def _wire(self, f: Path) -> None:
@@ -613,6 +641,9 @@ class _PythonBuilder:
                         g.add_edge(node, fx)
             if sym.get("parent"):
                 g.add_edge(node, f"{file}::{sym['parent']}")
+            else:
+                # Nothing in a module is usable before its import-time code has run.
+                g.add_edge(node, file)
             for dispatcher in sym.get("registers", ()):
                 # The dispatcher calls every registered implementation at runtime.
                 target = self._resolve_ref(file, info, dispatcher)

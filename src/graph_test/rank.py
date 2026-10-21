@@ -180,6 +180,10 @@ def rank(
         quiet = f in g.py_info and changes[f] is not None
         if not code and not data and not quiet:
             unmapped.append(f)
+        elif _test_support(g, f) and not any(n in g.tests for n in g.dependents([*code, *data])):
+            # A .py under tests/ that no test reaches is likely read some way the graph
+            # can't see (a golden file, exec'd, loaded by computed path): don't skip it.
+            unmapped.append(f)
 
     reach = g.dependents(code_starts)
     # Reach per risk level, so a test is scored by its best (risk / distance) start.
@@ -228,6 +232,17 @@ def rank(
         key=lambda r: (-r.score, r.distance if r.distance is not None else 1 << 30, r.target.node)
     )
     return Result(ranked, changed, unmapped, global_changes, ignored)
+
+
+def _test_support(g: Graph, path: str) -> bool:
+    """A non-test Python file inside a tests directory."""
+    p = Path(path)
+    return (
+        path in g.py_info
+        and not pyscan.is_test_file(p)
+        and p.name != "conftest.py"
+        and any(part in ("tests", "test") for part in p.parts[:-1])
+    )
 
 
 def _path(node: str, reach: dict[str, tuple[int, str | None]]) -> list[str]:

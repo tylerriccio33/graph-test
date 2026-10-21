@@ -16,6 +16,7 @@ test's items are kept, so ambiguity never skips anything.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from collections.abc import Iterator
@@ -46,6 +47,10 @@ def _flatten(value: Any, depth: int = 0) -> Iterator[Any]:
     elif isinstance(value, dict):
         for v in value.values():
             yield from _flatten(v, depth + 1)
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        # A case object (e.g. Case(path=...)): its fields name the files it uses.
+        for f in dataclasses.fields(value):
+            yield from _flatten(getattr(value, f.name, None), depth + 1)
     else:
         yield value
 
