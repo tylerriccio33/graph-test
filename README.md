@@ -10,7 +10,7 @@ graph-test rank --affected --format cmd   # pytest/cargo commands to paste
 graph-test graph --rdeps pkg/core.py::parse
 ```
 
-The diff is taken against the merge-base with `origin/main` (or `--base`), plus uncommitted and untracked files.
+The diff is taken against the merge-base with `origin/main` (or `--base`), plus uncommitted and untracked files. Staged, unstaged and untracked changes are always included. To check only those, ignoring commits on your branch, pass `--base HEAD`; that's also the fallback when there's no `origin/main` or `main`. Use `--files` to skip git entirely.
 
 ## What it tracks
 

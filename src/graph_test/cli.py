@@ -31,6 +31,10 @@ def _changes(cfg: Config, args: argparse.Namespace) -> tuple[Changes, str | None
     if args.files:
         return {str(Path(f)): None for f in args.files}, None
     base = args.base or gitutil.default_base(cfg.root)
+    if base == "HEAD" and not args.base:
+        print(
+            "graph-test: no origin/main or main; checking uncommitted changes only", file=sys.stderr
+        )
     return gitutil.changed_hunks(cfg.root, base), gitutil.merge_base(cfg.root, base)
 
 

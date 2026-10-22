@@ -370,6 +370,10 @@ _SKIP_FIXTURE_ARGS = frozenset({"self", "cls", "request"})
 _GLOB_CHARS = "*?[{<%"
 
 
+# Bare names that would link a whole tree's worth of unrelated files.
+_NO_NAME_LINK = frozenset({"conftest.py", "__init__.py", "__main__.py", "setup.py"})
+
+
 class _PythonBuilder:
     def __init__(
         self,
@@ -567,6 +571,8 @@ class _PythonBuilder:
             return [hit] if hit else []
         name = lit.strip()
         if "/" in name or not Path(name).suffix or Path(name).suffix == ".rs":
+            return []
+        if name in _NO_NAME_LINK:  # already wired as fixtures/imports; linking adds noise
             return []
         # A bare file name not next to the file, e.g. `case_dir / "expected.py"` with
         # `case_dir` computed at runtime: any file of that name below this one's directory.

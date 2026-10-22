@@ -82,6 +82,7 @@ UC 53  A .py file loaded by path (runpy/importlib) is linked like an import of a
 UC 54  Every symbol depends on its module's import-time code (`CASES.update(...)`).
 UC 55  A golden `expected.py` read via `case_dir / "expected.py"` selects just its case.
 UC 56  A changed .py under tests/ that no test reaches is unmapped (so `run` runs all).
+UC 66  A bare "conftest.py" literal doesn't link every conftest below it as data.
 """
 
 from __future__ import annotations
@@ -878,3 +879,12 @@ def test_uc56_unreached_py_under_tests_is_unmapped(tmp_path: Path) -> None:
     cfg = Config.load(repo)
     result = rank(cfg, build(cfg), gitutil.changed_hunks(repo, "main"), use_history=False)
     assert result.unmapped == ["tests/stray.py"]
+
+
+def test_uc66_bare_conftest_literal_not_linked(tmp_path: Path) -> None:
+    files = dict(GOLDEN)
+    files["tests/fixtures/grp/a/conftest.py"] = "X = 1\n"
+    files["tests/fixtures/helper.py"] = 'NAME = "conftest.py"\n'
+    repo = init_repo(tmp_path, files)
+    cfg = Config.load(repo)
+    assert not any(n.endswith("conftest.py") for n in build(cfg).data_nodes)

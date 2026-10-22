@@ -55,20 +55,21 @@ def _flatten(value: Any, depth: int = 0) -> Iterator[Any]:
         yield value
 
 
-def _matches(item: pytest.Item, changed: list[Path], root: Path) -> bool:
+def _matches(item: pytest.Item, changed: list[Path], root: Path) -> int:
+    """2 if a parameter resolves to a changed path, 1 if only a bare name/id matches, else 0."""
     callspec = getattr(item, "callspec", None)
     if callspec is None:
-        return False
+        return 0
     names = {c.name for c in changed} | {c.stem for c in changed}
     cid = str(callspec.id)
-    if cid in names or any(part in names for part in cid.split("-")):
-        return True
+    weak = cid in names or any(part in names for part in cid.split("-"))
     for value in _flatten(callspec.params):
         if not isinstance(value, (str, os.PathLike)):
             continue
         text = os.fspath(value)
         if text in names:
-            return True
+            weak = True
+            continue
         p = Path(text)
         bases = [Path()] if p.is_absolute() else [root, Path.cwd(), Path(item.path).parent]
         for base in bases:
@@ -79,8 +80,8 @@ def _matches(item: pytest.Item, changed: list[Path], root: Path) -> bool:
             if cand == root:
                 continue
             if any(c == cand or c.is_relative_to(cand) for c in changed):
-                return True
-    return False
+                return 2
+    return 1 if weak else 0
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -105,8 +106,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             groups.setdefault(key, []).append(item)
     for key, group in groups.items():
         changed = [(root / f).resolve() for f in cases[key]]
-        matched = [it for it in group if _matches(it, changed, root)]
-        keep.update(id(it) for it in (matched or group))
+        # A bare name like "expected" can appear in unrelated ids, so a real path match wins.
+        scores = {id(it): _matches(it, changed, root) for it in group}
+        best = max(scores.values())
+        keep.update(id(it) for it in group if not best or scores[id(it)] == best)
 
     dropped = [it for it in items if id(it) not in keep]
     if dropped:

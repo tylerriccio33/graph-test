@@ -91,3 +91,32 @@ def test_fixture_repo_ignores_caller_git_env(tmp_path: Path) -> None:
     assert leaked == {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"}
     repo = init_repo(tmp_path / "r", FILES)
     assert (repo / ".git").is_dir()
+
+
+def test_path_match_beats_bare_name_match(tmp_path: Path) -> None:
+    """An unrelated case whose id merely contains "expected" mustn't crowd out the real one."""
+    from types import SimpleNamespace
+
+    from graph_test import pytest_plugin
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a/expected.py").write_text("")
+    (tmp_path / "t.py").write_text("")
+
+    def item(cid: str, path: str) -> SimpleNamespace:
+        cs = SimpleNamespace(id=cid, params={"path": path})
+        return SimpleNamespace(path=tmp_path / "t.py", nodeid=f"t.py::test_x[{cid}]", callspec=cs)
+
+    items = [item("a", str(tmp_path / "a")), item("b-expected", "b"), item("c", "c")]
+    sel = tmp_path / "sel.json"
+    sel.write_text(
+        json.dumps({"root": str(tmp_path), "cases": {"t.py::test_x": ["a/expected.py"]}})
+    )
+    config = SimpleNamespace(hook=SimpleNamespace(pytest_deselected=lambda items: None))
+    mp = pytest.MonkeyPatch()
+    mp.setenv("GRAPH_TEST_SELECTION", str(sel))
+    try:
+        pytest_plugin.pytest_collection_modifyitems(config, items)  # type: ignore[arg-type]
+    finally:
+        mp.undo()
+    assert [i.callspec.id for i in items] == ["a"]
