@@ -42,7 +42,7 @@ def parse(source: str | None) -> ast.Module | None:
         return None
     try:
         return ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
 
 
@@ -229,6 +229,19 @@ def symbol_risk(
     checked: bool,
 ) -> tuple[float, str] | None:
     """Risk of the edit to one symbol (``None`` qual = module-level code)."""
+    try:
+        return _symbol_risk(old_tree, new_tree, qual, info, checked)
+    except RecursionError:
+        return FULL  # too deeply nested to compare: assume the worst
+
+
+def _symbol_risk(
+    old_tree: ast.Module | None,
+    new_tree: ast.Module | None,
+    qual: str | None,
+    info: pyscan.ModuleInfo,
+    checked: bool,
+) -> tuple[float, str] | None:
     if old_tree is None or new_tree is None:
         return FULL
     if qual is None:
