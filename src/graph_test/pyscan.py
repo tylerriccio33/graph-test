@@ -214,7 +214,7 @@ def _toplevel(body: list[ast.stmt]) -> Iterator[ast.stmt]:
 def analyze(source: str, module: str, is_package: bool) -> ModuleInfo:
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return {"imports": {}, "stars": [], "modules": [], "symbols": {}, "module": {"refs": []}}
     package = module if is_package else module.rpartition(".")[0]
 

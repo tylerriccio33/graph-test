@@ -173,3 +173,21 @@ def test_uc65_quoted_paths(tmp_path: Path) -> None:
     edit(repo, name, "return 1", "return 2")
     changes = gitutil.changed_hunks(repo, "main")
     assert set(changes) == {name}
+
+
+def _deep_source(arms: int, tail: str) -> str:
+    chain = "".join(f"{'if' if i == 0 else 'elif'} x == {i}:\n    y = {i}\n" for i in range(arms))
+    return "def f(x):\n    y = 0\n" + "\n".join("    " + ln for ln in chain.splitlines()) + tail
+
+
+def test_deep_ast_edit_is_full_risk_not_a_crash() -> None:
+    """A ~1000-arm if/elif chain overflows the recursive AST passes; the edit stays full risk."""
+    import ast
+
+    from graph_test import pyscan, risk
+
+    old_src, new_src = _deep_source(1000, "\n"), _deep_source(1000, "\n    y = 1\n")
+    old_tree, new_tree = ast.parse(old_src), ast.parse(new_src)
+    info = pyscan.analyze(new_src, "m", False)
+    assert risk.symbol_risk(old_tree, new_tree, None, info, True) == risk.FULL
+    assert risk.symbol_risk(old_tree, new_tree, "f", info, True) == risk.FULL
