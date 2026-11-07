@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from graph_test import gitutil
 from graph_test.config import SELECTION_ENV, Config
@@ -61,24 +62,41 @@ def select(g: Graph, result: Result, args: argparse.Namespace) -> tuple[list[Ran
     return everything, why
 
 
-def write_selection(root: Path, selected: list[Ranked]) -> Path | None:
+def pytest_budget(top: int | None, selected: list[Ranked]) -> int | None:
+    """How many pytest items ``-n`` leaves room for, None if it doesn't apply.
+
+    A cargo target can't be split, so each selected one takes one unit of the budget whole.
+    """
+    if not top or top < 0 or not any(r.target.kind == "pytest" for r in selected):
+        return None
+    return top - sum(1 for r in selected if r.target.kind != "pytest")
+
+
+def write_selection(root: Path, selected: list[Ranked], budget: int | None = None) -> Path | None:
     """Selection file for the pytest plugin; None if nothing needs narrowing."""
     py = [r for r in selected if r.target.kind == "pytest"]
     if not py:
         return None
-    payload = {
+    payload: dict[str, Any] = {
         "root": str(root),
         "full": sorted({r.target.nodeid for r in py if not r.cases}),
         "cases": {r.target.nodeid: sorted(r.cases) for r in py if r.cases},
     }
+    if budget is not None:
+        payload["budget"] = budget
+        payload["order"] = [r.target.nodeid for r in py]
     path = root / STATE_DIR / "selection.json"
     ensure_state_dir(path.parent)
     path.write_text(json.dumps(payload, indent=2))
     return path
 
 
-def batch_commands(targets: list[TestTarget]) -> list[list[str]]:
-    """Group targets into as few invocations as possible, preserving rank order of first use."""
+def batch_commands(targets: list[TestTarget], budget: int | None = None) -> list[list[str]]:
+    """Group targets into as few invocations as possible, preserving rank order of first use.
+
+    With a budget, pytest must load the plugin that enforces it: ``-p`` makes a pytest without
+    graph-test fail at startup rather than run every parametrized case.
+    """
     pytest_ids: dict[str, None] = {}
     cargo: dict[tuple[str, tuple[str, str] | None], None] = {}
     for t in targets:
@@ -92,7 +110,7 @@ def batch_commands(targets: list[TestTarget]) -> list[list[str]]:
         ids = list(pytest_ids)
         if sum(len(i) + 1 for i in ids) > _MAX_ARGV_CHARS:
             ids = list(dict.fromkeys(i.split("::", 1)[0] for i in ids))
-        cmds.append(["pytest", *ids])
+        cmds.append(["pytest", *(() if budget is None else ("-p", "graph_test")), *ids])
     for crate, selector in cargo:
         cmds.append(TestTarget("", "cargo", crate=crate, selector=selector).command())
     return cmds
@@ -143,8 +161,10 @@ def cmd_rank(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
         return 0
     if args.format == "cmd":
-        sel = write_selection(cfg.root, shown) if any(r.cases for r in shown) else None
-        for c in batch_commands([r.target for r in shown]):
+        budget = pytest_budget(args.top, shown)
+        needs_plugin = budget is not None or any(r.cases for r in shown)
+        sel = write_selection(cfg.root, shown, budget) if needs_plugin else None
+        for c in batch_commands([r.target for r in shown], budget):
             prefix = f"{SELECTION_ENV}={shlex.quote(str(sel))} " if sel and c[0] == "pytest" else ""
             print(prefix + shlex.join(c))
         return 0
@@ -166,10 +186,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     _print_summary(g, result, selected, why)
     if not selected:
         return 0
-    sel = write_selection(cfg.root, selected)
+    budget = pytest_budget(args.top, selected)
+    if budget is not None:
+        print(f"  -n budget: at most {budget} pytest item(s), parametrized cases included")
+    sel = write_selection(cfg.root, selected, budget)
     env = {**os.environ, SELECTION_ENV: str(sel)} if sel else dict(os.environ)
     rc = 0
-    for c in batch_commands([r.target for r in selected]):
+    for c in batch_commands([r.target for r in selected], budget):
         if c[0] == "pytest":
             c = [*shlex.split(args.pytest), *c[1:]]
         print(f"$ {shlex.join(c)}", flush=True)
@@ -178,6 +201,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         code = subprocess.call(c, cwd=cfg.root, env=env)
         if code == 5 and c[0] != "cargo":  # pytest: nothing collected after narrowing
             code = 0
+        if code == 4 and budget is not None and c[0] != "cargo":
+            print(
+                "graph-test: pytest refused to start. -n needs the plugin, so if the error above "
+                "is about graph_test, install graph-test where the tests run.",
+                file=sys.stderr,
+            )
         rc = rc or code
         if code and args.fail_fast:
             break
@@ -215,7 +244,14 @@ def parser() -> argparse.ArgumentParser:
     def selection(sp: argparse.ArgumentParser, gate: bool) -> None:
         sp.add_argument("--base", help="git ref to diff against (default: origin/main, main, ...)")
         sp.add_argument("--files", nargs="+", help="explicit changed files instead of git diff")
-        sp.add_argument("-n", "--top", type=int, help="only the top N tests by score")
+        sp.add_argument(
+            "-n",
+            "--top",
+            type=int,
+            help="the top N tests by score, running at most N things: each pytest item "
+            "(parametrized case) or cargo target counts as one, shared round-robin in rank order. "
+            "Needs graph-test installed where pytest runs; `rank` lists the N test functions",
+        )
         sp.add_argument("--min-score", type=float, default=0.0)
         sp.add_argument("--no-history", action="store_true", help="skip git co-change mining")
         sp.add_argument(
@@ -238,7 +274,7 @@ def parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_rank)
 
     run = sub.add_parser(
-        "run", help="run every affected test (pass/fail gate), or the top N with -n"
+        "run", help="run every affected test (pass/fail gate), or at most N with -n"
     )
     selection(run, gate=True)
     run.add_argument("--pytest", default="pytest", help="pytest invocation, e.g. 'uv run pytest'")
