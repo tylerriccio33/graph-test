@@ -120,3 +120,56 @@ def test_path_match_beats_bare_name_match(tmp_path: Path) -> None:
     finally:
         mp.undo()
     assert [i.callspec.id for i in items] == ["a"]
+
+
+@pytest.fixture
+def budget_proj(proj: Path) -> Path:
+    sel = json.loads((proj / "sel.json").read_text())
+    sel["budget"] = 5
+    sel["full"] += ["tests/test_x.py::test_many"]
+    sel["order"] = [
+        "tests/test_x.py::test_full",
+        "tests/test_x.py::test_corpus",
+        "tests/test_x.py::test_many",
+    ]
+    (proj / "sel.json").write_text(json.dumps(sel))
+    with (proj / "tests/test_x.py").open("a") as f:
+        f.write('\n@pytest.mark.parametrize("n", range(40))\ndef test_many(n):\n    pass\n')
+    return proj
+
+
+def _collected(proc: subprocess.CompletedProcess[str]) -> list[str]:
+    return [ln for ln in proc.stdout.splitlines() if ln.startswith("tests/")]
+
+
+def test_budget_stable_across_hash_seeds(budget_proj: Path) -> None:
+    runs = [_collected(_run(budget_proj, "--co", "-q", seed=s)) for s in ("0", "1", "123")]
+    assert runs[0] == runs[1] == runs[2]
+    assert len(runs[0]) == 5
+
+
+def test_budget_ignores_collection_order(budget_proj: Path) -> None:
+    # pytest-randomly shuffles before the budget runs; the same items must still be picked.
+    def run(*args: str) -> list[str]:
+        env = {**os.environ, "GRAPH_TEST_SELECTION": str(budget_proj / "sel.json")}
+        cmd = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--co", "-q", *args]
+        proc = subprocess.run(cmd, cwd=budget_proj, env=env, capture_output=True, text=True)
+        return _collected(proc)
+
+    plain = run("-p", "no:randomly")
+    assert len(plain) == 5
+    for seed in ("1", "2", "3"):
+        shuffled = run(f"--randomly-seed={seed}")
+        assert sorted(shuffled) == sorted(plain)
+
+
+@pytest.mark.parametrize("dist", ["load", "loadfile"])
+def test_budget_identical_under_xdist_and_reported(budget_proj: Path, dist: str) -> None:
+    pytest.importorskip("xdist")
+    proc = _run(budget_proj, "-p", "xdist", "-n", "3", "--dist", dist, "-q", seed="random")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "Different tests were collected" not in out
+    assert "5 passed" in proc.stdout, out
+    # Only workers collect, so this line proves the report crossed back to the controller.
+    assert "kept 5 of 48 cases from 3 of 3 tests; 43 did not run" in proc.stdout, out

@@ -4,7 +4,7 @@ Selects and ranks the tests affected by your diff in mixed Rust + Python repos. 
 
 ```sh
 graph-test run --pytest "uv run pytest"   # gate: every affected test, exit code = pass/fail
-graph-test run -n 40                      # just the top 40 by score
+graph-test run -n 40                      # at most 40 tests, parametrized cases included
 graph-test rank --explain                 # ranked list and why each test was picked
 graph-test rank --affected --format cmd   # pytest/cargo commands to paste
 graph-test graph --rdeps pkg/core.py::parse
@@ -32,7 +32,16 @@ The diff is taken against the merge-base with `origin/main` (or `--base`), plus 
 
 **Data files.** Path-like string literals in Python link to the files and directories they name, for example `HERE / "corpus"`, `"expected/*.csv"`, or `"tests/fixtures/input.sas"`. A test reached only through data is narrowed to individual cases: the bundled pytest plugin keeps only the parametrized cases whose parameters or ids refer to a changed file, and keeps every case when none match. Anything the tool can't infer can be mapped explicitly in config.
 
-Case narrowing needs graph-test installed in the environment where the tests run (for example as a dev dependency), because the plugin loads through pytest's `pytest11` entry point. Without it, the selected test functions still run, just with every case.
+Case narrowing needs graph-test installed in the environment where the tests run (for example as a dev dependency), because the plugin loads through pytest's `pytest11` entry point. Without it, the selected test functions still run, just with every case. `-n` is the exception, see below.
+
+**Bounding a run with `-n N`.** `-n` takes the top N test functions by score, then runs at most N things: each pytest item (one parametrized case) and each cargo target counts as one. Case narrowing happens first, so the budget applies to what remains.
+
+- Pytest items are dealt out one at a time per test function, in rank order, until the budget runs out, so a test with thousands of cases can't crowd out the others. When the ranking has at least N functions, each gets exactly one item; extra cases go out only when there are fewer functions than N.
+- Within a function the kept cases are spread evenly over the sorted node ids rather than taken from the front. The choice depends only on the selection and the collected node ids, so it's the same on every run and every xdist worker. That also means a `-n` run keeps exercising the same cases until the selection changes, which is why it doesn't replace a full run.
+- A cargo target takes one unit whole, however many `#[test]`s it holds. Skipped and xfail cases still use budget.
+- When the budget drops items, pytest's terminal summary says so: `graph-test: -n budget of 40 kept 40 of 950 cases from 40 of 40 tests; 910 did not run`.
+
+The budget is enforced by the plugin, so `-n` needs graph-test installed where the tests run. `run -n` and `rank -n --format cmd` pass `-p graph_test`, which makes a pytest without it fail at startup instead of quietly running every case. `rank -n` in text or json form lists the top N functions and enforces nothing, and the per-test `command` in json isn't budgeted.
 
 **Safety in gate mode.** A changed file the graph can't place makes `run` run everything (`--on-unmapped all`, the default). A changed global file does the same. Ignored paths (`*.md`, `docs/*`, ...) never select anything.
 
@@ -105,7 +114,7 @@ graph-test reads your code statically. The more directly a test's dependencies a
 ### Running it
 
 - **Install graph-test where the tests run** (for example as a dev dependency), so the pytest plugin can narrow to individual parametrized cases.
-- **Use the gate before pushing:** `graph-test run --pytest "uv run pytest"`. For a fast inner loop, use `graph-test rank -n 20 --format cmd` or `graph-test run -n 20`.
+- **Use the gate before pushing:** `graph-test run --pytest "uv run pytest"`. For a fast inner loop, use `graph-test rank -n 20 --format cmd` or `graph-test run -n 20`, which run at most 20 pytest items and cargo targets.
 - **Don't let "unmapped" files force full runs.** If `run` reports `running everything - unmapped change: X`, add `X` to `ignore` if it can't affect tests, or map it in `[tool.graph-test.data]` if it can.
 - **Keep `global-files` honest.** Every global file makes any change to it run everything. Drop entries that don't affect your tests, such as `uv.lock` if you never pin test behavior through it.
 - **Debug selections** with `graph-test rank --explain` (why a test was picked) and `graph-test graph --rdeps path/to/file.py::func` (everything that depends on a symbol). If something important is missing, the cause is usually one of the patterns above.
